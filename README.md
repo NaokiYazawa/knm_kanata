@@ -135,6 +135,31 @@ git -C /path/to/myapp add .mcp.json .claude && git -C /path/to/myapp commit -m "
 Discord で `/claude task:「READMEのtypoを直してPRを作って」`。
 スレッドが立ち、セッションのリンクが出て、Claude が判断に迷うとボタンが飛んでくる。
 
+## 詰まりどころ (実際に踏んだもの)
+
+**① 許可ドメインに入れていないと、MCP の接続失敗が «認証エラー» に化ける。**
+
+```
+kanata (AUTH_HEADER_REJECTED): "Server rejected the configured Authorization header (HTTP 403).
+… Error detail: request blocked: no rule or allowlist entry allows host kanata.linto-dev.workers.dev"
+```
+
+ラベルは «Authorization ヘッダが拒否された» だが、実際は cloud environment の**送信先許可リスト**で
+止まっている。**`request blocked: no rule or allowlist` の方を読む**こと。トークンを疑って時間を
+落とさない (Worker はトークン不一致なら 401 を返すので、403 はそもそも Worker に届いていない)。
+Allowed domains に入れるのは **スキーム無しのホスト名**。
+
+**② routine の `allowed_tools` に MCP ツールが入っていないと、承認待ちで固まる。**
+
+routine を API で作ると `allowed_tools` が既定の一覧で埋まり、そこに `mcp__kanata__*` は入らない。
+routine には承認する人がいないので、ログに `permission prompt mcp__kanata__ask_human` が出たまま
+進まなくなる。`mcp__kanata` (サーバー単位) と 3 つのツール名を足しておく。
+
+```bash
+# 切り分けは «存在しない session_key で ask_human を 1 回だけ呼ばせる» のが速い。
+# Discord に触れずに、許可ドメイン・環境変数・MCP 認証・ツール発見・承認まで一度に確かめられる。
+```
+
 ## まだ確かめていないこと
 
 **2 分を超えるツール呼び出しは自動でバックグラウンドタスクに回る** (Claude Code v2.1.212+) という仕様があり、`ask_human` の待ちがそこに触れないかは実測が要る。
@@ -147,6 +172,8 @@ Discord で `/claude task:「READMEのtypoを直してPRを作って」`。
 |---|---|
 | Worker | `https://kanata.linto-dev.workers.dev` (profile `linto`) |
 | D1 | `kanata-database-prod` |
+| routine | `trig_01XmeEUSizRoH87qxSbaJB6F` |
+| cloud environment | `env_013Q7xTUgZACfKXQRXp1u7ds` |
 | 1 本目の対象リポジトリ | このリポジトリ自身 (`NaokiYazawa/knm_kanata`) |
 
 root の `.mcp.json` と `.claude/` は **cloud session のための実配線**（`repo-template/` は

@@ -57,7 +57,21 @@ cloud session は **サブスク席の枠のまま** なので、こちらを使
 
 伸ばしたくなったら、まず «待ち続ける責務は Claude 側のループにある» を思い出すこと。
 
-## 6. 変更時のチェックリスト
+## 6. routine 側の設定は «コードの外にある前提»
+
+Worker のコードだけ正しくても動かない。routine と cloud environment に次が要る:
+
+| 置き場所 | 何を |
+|---|---|
+| cloud environment の Allowed domains | Worker のホスト名 (**スキーム無し**) |
+| cloud environment の環境変数 | `KANATA_URL` / `KANATA_TOKEN` |
+| routine の `allowed_tools` | `mcp__kanata` と 3 つのツール名 (無いと承認待ちで固まる) |
+
+どれが欠けても症状は «ask_human が呼ばれない» で同じに見える。切り分けは
+**存在しない `session_key` で `ask_human` を 1 回だけ呼ばせる** のが速い
+(Discord に触れずに outbound の全経路を確かめられる)。
+
+## 7. 変更時のチェックリスト
 
 1. 既存の共有先 (`domain/*` `db/repo.ts` `discord/components.ts`) に振り分けられないか
 2. 秘密・ゲート・3 秒応答の抜けはないか
