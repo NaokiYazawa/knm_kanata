@@ -9,8 +9,8 @@ Claude Code on the web には **走っているセッションへ外から発言
 だから «こちらから話しかける» のは諦め、**セッション側から聞きに来させる**。
 Worker 自身が MCP サーバー (`/mcp`) になり、対象リポジトリの `.mcp.json` から繋がれる。
 
-```
-/claude ──▶ Worker ──POST routines/{trig}/fire──▶ Anthropic 管理 VM
+```txt
+/claude ──▶ Worker ──POST routines/{trig}/fire──▶ Anthropic-managed VM
                 ▲                                      │
                 └──── ask_human / report (MCP) ◀────────┘
 ```
@@ -42,7 +42,7 @@ cloud session は **サブスク席の枠のまま** なので、こちらを使
 ## 4. 対で維持するもの (片方だけ直すと黙って壊れる)
 
 | | 相手 |
-|---|---|
+| --- | --- |
 | `domain/ids.ts` の `KANATA-<16hex>` | `repo-template/.claude/hooks/kanata-stop.sh` の grep |
 | `domain/prompt.ts` の `ROUTINE_PROMPT` | claude.ai の routine に貼ってある本文 |
 | `domain/prompt.ts` の `buildFireText` | 同上 (payload の 1 行目を session_key として読む前提) |
@@ -50,8 +50,7 @@ cloud session は **サブスク席の枠のまま** なので、こちらを使
 
 ## 5. 待ちの長さは «75 秒» が上限
 
-`ask_human` は人が答えるまで Claude の turn を止める。ただし 1 回の待ちは 75 秒で切り上げ、
-`status: "pending"` を返して `ask_wait` を呼び直させる。理由は 2 つ:
+`ask_human` は人が答えるまで Claude の turn を止める。ただし 1 回の待ちは 75 秒で切り上げ、`status: "pending"` を返して `ask_wait` を呼び直させる。理由は 2 つ:
 
 - Cloudflare のエッジは応答が始まらないまま 100 秒ほどで切る
 - Claude Code は **2 分を超えたツール呼び出しをバックグラウンドタスクへ回す** (v2.1.212+)
