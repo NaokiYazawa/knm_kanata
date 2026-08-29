@@ -1,11 +1,12 @@
 import { Hono } from "hono";
 import { handleInteraction } from "./discord/interactions";
-import { timingSafeEqual, verifyDiscordSignature } from "./discord/verify";
+import { bearerOk as bearerMatches, verifyDiscordSignature } from "./discord/verify";
 import type { Env } from "./env";
 import { gatewayStub } from "./gateway/gateway.do";
 import { handleContextHook } from "./hooks/context";
 import { handleSessionEndHook } from "./hooks/session-end";
 import { handleMcp } from "./mcp/server";
+import { sweepStuckSessions } from "./session/sweep";
 
 /**
  * 入口とゲートだけ。どれも公開 URL なので、**ゲートを通らない要求はハンドラに渡さない**
@@ -43,10 +44,7 @@ app.post("/discord/interactions", async (c) => {
 });
 
 function bearerOk(c: { req: { header: (name: string) => string | undefined }; env: Env }): boolean {
-  const header = c.req.header("authorization") ?? "";
-  const prefix = "Bearer ";
-  if (!header.startsWith(prefix)) return false;
-  return timingSafeEqual(header.slice(prefix.length), c.env.KANATA_TOKEN);
+  return bearerMatches(c.req.header("authorization"), c.env.KANATA_TOKEN);
 }
 
 app.post("/mcp", async (c) => {
@@ -90,12 +88,24 @@ export default {
   fetch: app.fetch,
 
   /**
-   * 5 分ごとの watchdog。**DO は自分では起動できない**ので、evict されて alarm ごと
-   * 消えた状態から戻す手段がこれしかない (alarm は DO が生きている間の自力復帰用)。
-   * 既に繋がっていれば `/ensure` は何もしない。
+   * 5 分ごとの watchdog。2 つのことをする。
+   *
+   * 1. Gateway を張り直す。**DO は自分では起動できない**ので、evict されて alarm ごと
+   *    消えた状態から戻す手段がこれしかない (alarm は DO が生きている間の自力復帰用)。
+   *    既に繋がっていれば `/ensure` は何もしない。
+   * 2. **起動しそこねたセッションを畳む** (`session/sweep.ts`)。`waitUntil` は応答から
+   *    30 秒で切られるので、routine の起動が間に合わないと `queued` のまま残り、以後
+   *    そのスレッドの発言を静かに飲み込み続ける。
+   *
+   * 片方が落ちてももう片方は進める (掃除が失敗しても Gateway は張り直したい)。
    */
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(gatewayStub(env).fetch("https://gateway/ensure", { method: "POST" }));
+    ctx.waitUntil(
+      sweepStuckSessions(env).catch((error) => {
+        console.warn("[sweep] failed", error);
+      }),
+    );
   },
 } satisfies ExportedHandler<Env>;
 

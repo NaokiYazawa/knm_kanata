@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { timingSafeEqual, verifyDiscordSignature } from "./verify";
+import { bearerOk, timingSafeEqual, verifyDiscordSignature } from "./verify";
 
 /**
  * WebCrypto のアルゴリズム名は runtime ごとに揺れた歴史がある ("NODE-ED25519" 時代)。
@@ -90,5 +90,28 @@ describe("timingSafeEqual", () => {
     expect(timingSafeEqual("abc", "abd")).toBe(false);
     expect(timingSafeEqual("abc", "abcd")).toBe(false);
     expect(timingSafeEqual("", "")).toBe(true);
+  });
+});
+
+describe("Bearer のゲート", () => {
+  it("一致すれば通す (前後の空白は無視する)", () => {
+    expect(bearerOk("Bearer s3cret", "s3cret")).toBe(true);
+    // secret を `echo` で入れると末尾に改行が入る。値は合っているので通す。
+    expect(bearerOk("Bearer s3cret", "s3cret\n")).toBe(true);
+  });
+
+  it("違う値・prefix 無し・ヘッダ無しは通さない", () => {
+    expect(bearerOk("Bearer nope", "s3cret")).toBe(false);
+    expect(bearerOk("s3cret", "s3cret")).toBe(false);
+    expect(bearerOk(undefined, "s3cret")).toBe(false);
+  });
+
+  it("**設定が空なら誰も通さない** (空文字どうしが一致して全開、を作らない)", () => {
+    // secret を入れ忘れた Worker で `Authorization: Bearer ` が通ると、/mcp も /hooks/* も
+    // /gateway/* も公開されてしまう。設定漏れが全開になる形を残さない。
+    for (const configured of [undefined, "", "   "]) {
+      expect(bearerOk("Bearer ", configured)).toBe(false);
+      expect(bearerOk("Bearer なにか", configured)).toBe(false);
+    }
   });
 });

@@ -86,7 +86,6 @@ describe("/claude", () => {
       sessionKey: "KANATA-1234123412341234",
       question: "次は何をしますか？",
       options: ["おわり"],
-      allowFreeText: true,
     });
     await repo.attachAskMessage(ask.askId, "msg-live");
     await repo.setStatus("KANATA-1234123412341234", "waiting");
@@ -131,6 +130,44 @@ describe("/claude", () => {
     expect(seen).toContain(FIRE);
   });
 
+  it("**スレッドを作れなかったら、そのチャンネルを会話にしない**", async () => {
+    // ここでチャンネル id を thread_id に入れると `findSessionByThread` が当たるようになり、
+    // そのチャンネルの雑談が丸ごと Claude への入力になる (「起動は /claude だけ」という
+    // 約束が、失敗経路でだけ静かに破れる)。通知は出す。拾う口だけを開けない。
+    replies.set(ORIGINAL, { status: 200, body: { id: "msg-nt", channel_id: "ch-demo" } });
+    replies.set("https://discord.com/api/v10/channels/ch-demo/messages/msg-nt/threads", {
+      status: 403,
+      body: { message: "Missing Permissions" },
+    });
+    replies.set("https://discord.com/api/v10/channels/ch-demo/messages", {
+      status: 200,
+      body: { id: "msg-note" },
+    });
+    firedOk();
+
+    const inChannel = {
+      type: 2,
+      token: "itok",
+      channel: { id: "ch-demo", type: 0 },
+      member: { user: { id: "owner-1" } },
+      data: { name: "claude", options: [{ name: "task", value: "スレッド無しで起動" }] },
+    } as never;
+
+    await handleInteraction(inChannel, env, ctx);
+    await settle();
+
+    const repo = new Repo(env.DB);
+    const created = (await repo.listRecentSessions(10)).find(
+      (s) => s.prompt === "スレッド無しで起動",
+    );
+    expect(created?.threadId).toBeNull();
+    // 素の文はこのチャンネルでは拾われない。
+    expect(await repo.findSessionByThread("ch-demo")).toBeNull();
+    // それでも起動はしていて、知らせもチャンネルへ出ている。
+    expect(seen).toContain(FIRE);
+    expect(seen).toContain("https://discord.com/api/v10/channels/ch-demo/messages");
+  });
+
   it("死んだセッションの未回答の質問は «回答» にせず、同じスレッドで起こし直す", async () => {
     const repo = new Repo(env.DB);
     await repo.createSession({
@@ -146,7 +183,6 @@ describe("/claude", () => {
       sessionKey: "KANATA-deaddeaddeaddead",
       question: "もう誰も待っていない質問",
       options: [],
-      allowFreeText: true,
     });
     // 生存の印を «十分に古い» ところへ倒す (握りが止まった状態)。
     await env.DB.prepare("UPDATE sessions SET updated_at = ? WHERE session_key = ?")
@@ -191,7 +227,7 @@ describe("/claude", () => {
     // 起動しない。次に Claude が聞きに来たときに渡す。
     expect(seen).not.toContain(FIRE);
     expect((await repo.listRecentSessions(10)).length).toBe(1);
-    expect(await repo.takeQueued("KANATA-0f0f0f0f0f0f0f0f")).toMatchObject({
+    expect(await repo.peekQueued("KANATA-0f0f0f0f0f0f0f0f")).toMatchObject({
       text: "この後 README も",
       authorId: "owner-1",
     });

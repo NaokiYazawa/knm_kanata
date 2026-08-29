@@ -1,7 +1,13 @@
 import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Repo } from "../db/repo";
-import { DEFAULTS, handleMcp, OBSERVED_EDGE_CUTOFF_MS } from "./server";
+import {
+  CLIENT_IDLE_ABORT_MS,
+  DEFAULTS,
+  handleMcp,
+  OBSERVED_EDGE_CUTOFF_MS,
+  SILENT_HOLD_MS,
+} from "./server";
 
 /**
  * ask_human の往復 = このプロジェクトで一番壊れると困るところ。
@@ -105,6 +111,15 @@ describe("MCP のハンドシェイク", () => {
     expect(body).toMatchObject({
       result: { protocolVersion: "2025-06-18", serverInfo: { name: "kanata" } },
     });
+  });
+
+  it("使い方を名乗る (クライアントがシステムプロンプトへ差し込む)", async () => {
+    // 握りが落ちたときの復帰手順を **サーバー自身が** 言えるようにしておく。
+    // routine 側の本文だけに書いていると、貼り忘れで契約が静かに壊れる。
+    const body = (await rpcJson(rpc("initialize", {}))) as {
+      result?: { instructions?: string };
+    };
+    expect(body.result?.instructions).toContain("ask_wait");
   });
 
   it("知らないバージョンなら自分の最新を返す", async () => {
@@ -280,7 +295,7 @@ describe("ask_human の握り", () => {
     });
     expect((await repo.getSession(sessionKey))?.status).toBe("running");
     // 二度は渡らない。
-    expect(await repo.takeQueued(sessionKey)).toBeNull();
+    expect(await repo.peekQueued(sessionKey)).toBeNull();
   });
 
   it("握り切れなかったら pending を返して ask_wait に引き継ぐ", async () => {
@@ -344,13 +359,18 @@ describe("ask_human の握り", () => {
     expect(toolText(body)).toContain("待たずに");
   });
 
-  it("答える手段が無い質問は作らせない", async () => {
-    const sessionKey = "KANATA-0000111122223333";
-    await seedSession(sessionKey, "th-6");
-    const body = await (
-      await handleMcp(askCall(sessionKey, { options: [], allow_free_text: false }), env)
-    ).json();
-    expect(isToolError(body)).toBe(true);
+  it("選択肢が無くても質問を出せる (答えはスレッドに書けばよい)", async () => {
+    const sessionKey = "KANATA-0d0d0d0d0d0d0d0d";
+    await seedSession(sessionKey, "th-free");
+    expectDiscordPost("th-free", "msg-free");
+
+    const response = await handleMcp(askCall(sessionKey, { options: [] }), env);
+    // 握りに入る = 質問は出せている。ボタンは 1 つも付けない。
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    await response.text();
+    const posted = calls.find((c) => c.url.endsWith("/channels/th-free/messages"));
+    if (!posted) throw new Error("th-free へ投稿していません");
+    expect((posted.body as { components?: unknown[] }).components).toEqual([]);
   });
 });
 
@@ -449,10 +469,54 @@ describe("report", () => {
   });
 });
 
+describe("見捨てられたセッションを握り続けない", () => {
+  it("同じスレッドで新しいセッションが立っていたら、握らず打ち切る", async () => {
+    // restart が起きると古い方の問いは誰にも答えられなくなる。古い方はそれを知る手段を
+    // 持たないので、放っておくと ask_wait → 15 分 → pending → ask_wait を永久に繰り返し、
+    // **待つほどトークンを食う** (この設計がいちばん避けたかったこと) 。
+    const old = "KANATA-0a0a0a0a0a0a0a0a";
+    const repo = await seedSession(old, "th-super");
+    const ask = await repo.createAsk({
+      askId: "ask_00000000000000aa",
+      sessionKey: old,
+      question: "A か B か",
+      options: [],
+    });
+
+    const newer = "KANATA-0b0b0b0b0b0b0b0b";
+    await seedSession(newer, "th-super");
+
+    const body = await rpcJson(
+      rpc("tools/call", { name: "ask_wait", arguments: { ask_id: ask.askId } }),
+    );
+    expect(isToolError(body)).toBe(true);
+    expect(toolText(body)).toContain("superseded");
+  });
+
+  it("終わったセッションでは、新しい質問を出させない", async () => {
+    const key = "KANATA-0c0c0c0c0c0c0c0c";
+    const repo = await seedSession(key, "th-closed");
+    await repo.setStatus(key, "done");
+
+    const body = await rpcJson(askCall(key));
+    expect(isToolError(body)).toBe(true);
+    expect(toolText(body)).toContain("closed");
+    // Discord へは何も出していない (誰も見ていないところへ質問を置かない)。
+    expect(calls).toEqual([]);
+  });
+});
+
 describe("握りの前提", () => {
   it("ping の間隔がエッジの限界より十分内側にある", () => {
     // 応答が始まらないまま握るとエッジが 502 を返す。SSE でも «沈黙» が続けば同じなので、
     // ping はその半分より内側に置く。伸ばす向きの変更をここで止める。
     expect(DEFAULTS.pingMs * 2).toBeLessThan(OBSERVED_EDGE_CUTOFF_MS);
+  });
+
+  it("**沈黙したまま握る上限が、クライアント側の打ち切りより内側にある**", () => {
+    // progressToken が無いと SSE のコメント行しか流れず、クライアントから見れば無音。
+    // Claude Code は無音 5 分でツール呼び出しを abort する (v2.1.187 以降)。先に自分から
+    // pending を返して降りれば ask_wait で拾い直せるので、答えも往復も失われない。
+    expect(SILENT_HOLD_MS).toBeLessThan(CLIENT_IDLE_ABORT_MS);
   });
 });

@@ -3,10 +3,18 @@
  * custom_id 100 字) をここで吸収し、`discord/` 側は組み立てるだけにする。
  *
  * 制約を越えた入力を **黙って切り捨てない** — 選択肢が 30 個来たら «多すぎる» と Claude に返す。
- * 勝手に 25 個へ削ると、Claude が想定した選択肢と人が押せる選択肢がズレる。
+ * 勝手に 20 個へ削ると、Claude が想定した選択肢と人が押せる選択肢がズレる。
+ *
+ * ## 自由記述のボタンを持たない理由
+ *
+ * **選択肢に無いことを言いたいときは、スレッドに素で書けばそれが回答になる** (`domain/inbound.ts`)。
+ * だから «✍️ 書く» ボタン → モーダル、という口は要らない。持たない方が良い理由がもう 1 つあって、
+ * モーダルの送信に対する «元のメッセージを書き換える» 応答 (type 7) は Discord の仕様上
+ * **コンポーネント由来の interaction にしか認められていない**。ボタンから開いたモーダルでは
+ * 通るが、文書化されていない挙動に乗ることになる。使わない口のために踏む橋ではない。
  */
 
-/** 1 行 5 個 × 5 行 = 25。最後の 1 枠は「自由に書く」に使うので 24 まで。 */
+/** 1 行 5 個 × 最大 5 行 = 25 まで置けるが、20 を超える選択肢は読めないので上限にする。 */
 export const MAX_OPTIONS = 20;
 /** Discord のボタンラベル上限。 */
 export const MAX_OPTION_LENGTH = 80;
@@ -18,14 +26,12 @@ export type AskInput = Readonly<{
   sessionKey: string;
   question: string;
   options: readonly string[];
-  allowFreeText: boolean;
 }>;
 
 export function validateAsk(input: {
   sessionKey: string;
   question: unknown;
   options: unknown;
-  allowFreeText: unknown;
 }): AskInput | AskInputProblem {
   const question = typeof input.question === "string" ? input.question.trim() : "";
   if (question === "") return { message: "question が空です" };
@@ -39,7 +45,7 @@ export function validateAsk(input: {
   if (!Array.isArray(rawOptions)) return { message: "options は文字列の配列にしてください" };
   if (rawOptions.length > MAX_OPTIONS) {
     return {
-      message: `options が多すぎます (${rawOptions.length} 個 / 上限 ${MAX_OPTIONS} 個)。選択肢を絞るか allow_free_text だけで聞いてください`,
+      message: `options が多すぎます (${rawOptions.length} 個 / 上限 ${MAX_OPTIONS} 個)。選択肢を絞るか、options を空にして自由に答えてもらってください`,
     };
   }
 
@@ -58,13 +64,8 @@ export function validateAsk(input: {
     options.push(option);
   }
 
-  // 既定で自由記述を許す。押す口が 1 つも無い質問を作れてしまうのを構造で防ぐ。
-  const allowFreeText = input.allowFreeText === undefined ? true : input.allowFreeText === true;
-  if (options.length === 0 && !allowFreeText) {
-    return { message: "options が空で allow_free_text も false だと、人が答える手段がありません" };
-  }
-
-  return { sessionKey: input.sessionKey, question, options, allowFreeText };
+  // options が空でも問題ない。**スレッドに素で書けば回答になる**ので、答える手段は常にある。
+  return { sessionKey: input.sessionKey, question, options };
 }
 
 export function isAskProblem(value: AskInput | AskInputProblem): value is AskInputProblem {
@@ -73,37 +74,18 @@ export function isAskProblem(value: AskInput | AskInputProblem): value is AskInp
 
 /* ---- Discord の custom_id ---- */
 
-export type AskAction =
-  | Readonly<{ kind: "pick"; askId: string; index: number }>
-  | Readonly<{ kind: "free"; askId: string }>
-  | Readonly<{ kind: "modal"; askId: string }>;
-
-export const MODAL_ANSWER_FIELD = "answer";
+export type AskAction = Readonly<{ kind: "pick"; askId: string; index: number }>;
 
 export function pickCustomId(askId: string, index: number): string {
   return `ask:${askId}:${index}`;
 }
 
-export function freeCustomId(askId: string): string {
-  return `askfree:${askId}`;
-}
-
-export function modalCustomId(askId: string): string {
-  return `askmodal:${askId}`;
-}
-
 export function parseAskAction(customId: string): AskAction | null {
   const parts = customId.split(":");
-  const head = parts[0];
+  if (parts[0] !== "ask") return null;
   const askId = parts[1];
   if (!askId) return null;
-
-  if (head === "ask") {
-    const index = Number(parts[2]);
-    if (!Number.isInteger(index) || index < 0 || index >= MAX_OPTIONS) return null;
-    return { kind: "pick", askId, index };
-  }
-  if (head === "askfree") return { kind: "free", askId };
-  if (head === "askmodal") return { kind: "modal", askId };
-  return null;
+  const index = Number(parts[2]);
+  if (!Number.isInteger(index) || index < 0 || index >= MAX_OPTIONS) return null;
+  return { kind: "pick", askId, index };
 }
