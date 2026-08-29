@@ -231,9 +231,33 @@ curl -X POST -H "Authorization: Bearer $KANATA_TOKEN" https://<worker>/gateway/r
 account with the same name"*）。一方 `~/.claude/skills/` はローカルでは project より強いのに
 クラウドでは読まれないので、**手元とクラウドで挙動が変わる**組み合わせになります。
 
-疎通確認用に `.claude/skills/kanata-selftest/` を置いてあります。`/claude` で
-「kanata-selftest を使って」と頼むと、合言葉と、そのセッションから見えているスキルの
-置き場所を報告します。
+### 実測 (2026-08-29)
+
+疎通確認用に `.claude/skills/kanata-selftest/` を置いてあります。実際にクラウドセッションで
+走らせた結果:
+
+```
+--- プロジェクト (このリポジトリ) ---
+kanata-selftest                        ← commit したスキルが読まれている
+--- 個人 (~/.claude/skills) ---
+session-start-hook
+synced                                 ← claude.ai のスキルが同期されて置かれる
+--- claude.ai 同期の置き場 (~/.claude/skills/synced) ---
+46729bd0-…_c6ca81c6-…
+--- プラグイン ---
+synced                                 ← synced plugins も届いている
+```
+
+**合言葉が返ってきた**ので、一覧に名前が出ているだけでなく **SKILL.md の本文が届いている**
+ことまで確認できました（説明文だけなら一覧に出て本文は読まれません）。呼び出しは `Skill`
+ツール経由で、4 ターン・16 秒で完了しています。
+
+そのセッションから呼べたスキルには、claude.ai 側で有効にしてあるものも並んでいました
+（`requirements-definition` / `morning` / `import-memory` など）。**claude.ai アカウントの口が
+クラウドセッションに効いている**ことの実測です。
+
+なお **「Claude が説明文を見て自分で選ぶ」経路はまだ実測していません**（この確認では名指し
+しました）。仕様上は `description` で自動選択されます。
 
 ## コンテキストの残量
 
