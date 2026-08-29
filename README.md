@@ -200,6 +200,41 @@ curl -X POST -H "Authorization: Bearer $KANATA_TOKEN" https://<worker>/gateway/r
 502 もバックグラウンド化も起きず、progress 通知も 37 回流れた。turn が増えるのは «握りの上限
 (`ASK_HOLD_MS`、既定 15 分) に達したとき» だけなので、伸ばせばさらに減る。
 
+## スキル (Agent Skills)
+
+**リポジトリに commit したスキルは、クラウドセッションでそのまま使えます。**
+
+```
+.claude/skills/<name>/SKILL.md   → commit して push するだけ
+```
+
+[公式ドキュメントの「What carries over from your setup」](https://code.claude.com/docs/en/cloud-environments)に
+`Your repo's .claude/skills/, .claude/agents/, .claude/commands/` → **Yes (Part of the clone)** と
+明記されています。routine の `allowed_tools` に `Skill` が入っていることだけ確認してください
+（API で作った routine には既定で入ります）。
+
+### 複数のリポジトリで共通に使いたいとき
+
+| 方法 | 効き方 | 注意 |
+|---|---|---|
+| **claude.ai のアカウントで有効化** | 全リポジトリ・全 routine に自動で届く | Anthropic 経由なので**許可ドメイン不要**。リポジトリ側の設定も不要 |
+| リポジトリの `.claude/settings.json` でプラグイン宣言 | マーケットプレイス 1 本を各リポジトリから参照。git で版管理できる | セッション開始時にインストールするので、**マーケットプレイスのホストを Allowed domains に足す**必要がある |
+
+**効かないもの**（同じ表より）:
+
+| `~/.claude/skills/`（手元のマシン） | **No** — *"Live on your machine, not in the repo"* |
+|---|---|
+| ユーザー設定だけで有効化したプラグイン | **No** — リポジトリの `.claude/settings.json` で宣言するか、claude.ai で有効にする |
+
+**同名のときの優先順位に注意。** リポジトリのスキルは claude.ai 同期スキルを**上書き**します
+（*"A skill or command from any of these sources overrides a skill synced from your claude.ai
+account with the same name"*）。一方 `~/.claude/skills/` はローカルでは project より強いのに
+クラウドでは読まれないので、**手元とクラウドで挙動が変わる**組み合わせになります。
+
+疎通確認用に `.claude/skills/kanata-selftest/` を置いてあります。`/claude` で
+「kanata-selftest を使って」と頼むと、合言葉と、そのセッションから見えているスキルの
+置き場所を報告します。
+
 ## コンテキストの残量
 
 Claude の発言の末尾に、そのときの使用量が小さく付きます。
