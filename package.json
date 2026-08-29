@@ -5,15 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy": "wrangler deploy --profile linto",
     "check-types": "tsc --noEmit && tsc --noEmit -p tsconfig.scripts.json",
     "check": "biome check --write .",
     "test": "vitest run",
     "test:watch": "vitest",
     "db:migrate:local": "wrangler d1 migrations apply kanata-database-prod --local",
-    "db:migrate": "wrangler d1 migrations apply kanata-database-prod --remote",
+    "db:migrate": "wrangler d1 migrations apply kanata-database-prod --remote --profile linto",
     "commands:register": "node --env-file-if-exists=.env.local scripts/register-commands.ts",
-    "projects:push": "node scripts/push-projects.ts"
+    "projects:push": "node scripts/push-projects.ts --profile linto"
   },
   "dependencies": {
     "hono": "^4.10.3"
