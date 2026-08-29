@@ -43,3 +43,40 @@ export function describe(projects: readonly Project[]): string {
     .map((p) => `  - ${p.name}  ${p.channelId ?? "(チャンネル未設定)"}  ${p.repoUrl}`)
     .join("\n");
 }
+
+/**
+ * トークンが本当に通るかを、**セッションを作らずに**確かめる。
+ *
+ * fire は上限 (65,536 文字) を超える `text` を **認証の後で** 弾く。だから故意に長い text を
+ * 送れば、`400 invalid_request_error` = 認証は通った / `401 authentication_error` = 通っていない、
+ * と切り分けられる。どちらでもセッションは作られないので実行回数を消費しない。
+ *
+ * **形を見るのではなく実際に叩く**のが肝。`sk-ant-x` のような «それらしい» 置き換え文字列は
+ * 形の検査をすり抜ける。実際にすり抜けて本番へ送られ、`/claude` が 401 で落ちた (2026-08-29)。
+ */
+export async function checkToken(
+  project: Project,
+): Promise<{ ok: boolean; status: number; detail: string }> {
+  const overLimit = "x".repeat(70_000);
+  let response: Response;
+  try {
+    response = await fetch(project.fireUrl, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${project.fireToken}`,
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": "experimental-cc-routine-2026-04-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ text: overLimit }),
+    });
+  } catch (error) {
+    return { ok: false, status: 0, detail: `届きませんでした: ${String(error)}` };
+  }
+
+  if (response.status === 401) return { ok: false, status: 401, detail: "トークンが通りません" };
+  if (response.status === 404)
+    return { ok: false, status: 404, detail: "fireUrl の routine がありません" };
+  // 400 は «長すぎる» を弾かれただけ = 認証は通っている。429 などは判定できないので通す。
+  return { ok: true, status: response.status, detail: "" };
+}

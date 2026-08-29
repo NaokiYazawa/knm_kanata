@@ -126,7 +126,7 @@ routine は**承認する人がいない状態で自律実行される**ので�
 ```
 
 | 鍵 | 要否 | 何を書くか |
-|---|---|---|
+| --- | --- | --- |
 | `name` | 必須 | `/claude` の project 選択肢に出る名前。重複不可 |
 | `repoUrl` | 必須 | GitHub の URL。起動メッセージにリポジトリ名として出す |
 | `fireUrl` | 必須 | routine の API トリガの URL |
@@ -135,10 +135,15 @@ routine は**承認する人がいない状態で自律実行される**ので�
 | `repos` | 任意 | 触れるリポジトリの一覧 (**表示用**)。モノレポなら書かない |
 
 ```bash
-pnpm run projects:push -- --dry-run          # 何を送るか先に見る
+pnpm run projects:push -- --dry-run          # 送る内容とトークンの通りを先に見る
 pnpm run projects:push -- --profile linto    # 検証して secret へ送る
 pnpm run commands:register                   # /claude の project 選択肢を更新 (任意)
 ```
+
+**`projects:push` は送る前にトークンが本当に通るか叩いて確かめる** (セッションは作らないので
+実行回数を消費しない)。通らないものがあれば送らずに止まる。`sk-ant-x` のような置き換え忘れは
+形の検査をすり抜けるので、**実際に叩くしかない** — すり抜けて本番へ行き `/claude` が 401 で
+落ちたことがある。
 
 **secret は書き込み専用で読み出せない** (`wrangler secret list` は名前しか返さない)。そして
 `wrangler secret put` は**値を丸ごと置き換える**ので、`projects.json` に既存のプロジェクトが
