@@ -2,6 +2,7 @@ import { fireRoutine } from "../anthropic/routines";
 import { Repo } from "../db/repo";
 import { MODAL_ANSWER_FIELD, parseAskAction } from "../domain/ask";
 import { newSessionKey } from "../domain/ids";
+import { isOwner } from "../domain/owner";
 import { findProject, isProjectsProblem, parseProjects } from "../domain/projects";
 import { buildFireText } from "../domain/prompt";
 import type { Env } from "../env";
@@ -77,10 +78,13 @@ export async function handleInteraction(
 ): Promise<Response> {
   if (interaction.type === TYPE_PING) return json({ type: REPLY_PONG });
 
-  // 個人用なので allowlist は 1 件。ここを通らないものは何もできない (fail-closed)。
   const userId = actorId(interaction);
-  if (!userId || userId !== env.OWNER_DISCORD_USER_ID) {
-    return ephemeral("この bot は個人用です。");
+  if (userId === null || !isOwner(env.OWNER_DISCORD_USER_ID, userId)) {
+    // 押した本人にだけ見える返信なので、本人の ID を添える。
+    // これが無いと «設定した ID が違う» と «そもそも別人» を切り分けられない。
+    return ephemeral(
+      `この bot は個人用です。(あなたの Discord ユーザー ID: ${userId ?? "取得できませんでした"})`,
+    );
   }
 
   if (interaction.type === TYPE_APPLICATION_COMMAND) {
