@@ -10,6 +10,7 @@ import {
   gatewayIsHealthy,
   type InboundMessage,
   initialGatewayState,
+  nextAlarmAt,
   parseGatewayPayload,
   pruneReconnects,
   step,
@@ -96,11 +97,11 @@ export class DiscordGatewayDO extends DurableObject<Env> {
    * Cloudflare が再試行するが、原因が残っていれば同じ場所で落ち続ける。ログに落として次を張る。
    */
   override async alarm(): Promise<void> {
-    try {
-      await this.tick();
-    } catch (error) {
-      console.warn("[gateway] alarm failed", error);
-    }
+    // **取り込みや close と同じ列に並べる。** `tick()` は state を読んでから書くまでに
+    // storage 操作の隙間があり、その隙間で MESSAGE_CREATE が処理されると `seq` の
+    // 書き戻しが後退しうる。後退すると resume で同じイベントが再送され、同じ発言が
+    // 2 回取り込まれる。`seq` を書く経路は 3 つとも直列化しておく。
+    await this.serialize(() => this.tick());
     await this.scheduleAlarm();
   }
 
@@ -193,6 +194,10 @@ export class DiscordGatewayDO extends DurableObject<Env> {
 
   private async openSocketOnce(state: GatewayState): Promise<void> {
     const now = Date.now();
+    // 前の接続の heartbeat 予約を捨てる。新しい接続に heartbeat の義務が生まれるのは
+    // HELLO を受けてからで、残しておくと «過去の予約» が即時 alarm を呼ぶ
+    // (`nextAlarmAt` も同じことを状態側から防ぐ。片方だけに頼らない)。
+    await this.ctx.storage.delete(KEY_HEARTBEAT_AT);
     // 張り直しの時刻を残す。`throttleReconnect` がこれを見て 60 秒待たせる。
     const recent = pruneReconnects(
       (await this.ctx.storage.get<number[]>(KEY_RECONNECTS)) ?? [],
@@ -444,23 +449,26 @@ export class DiscordGatewayDO extends DurableObject<Env> {
   }
 
   /**
-   * 予約の最小値に合わせる。予約が無いときも 60 秒後に張るのは、evict されて `this.socket` が
-   * 消えた状態を自力で拾うため。`fatal` のときだけは消す — 直すのは人なので、待っても変わらない
-   * 状態で 1 分ごとに DO を起こす意味が無い。
+   * 次の alarm を張る。**どの時刻にするかの判断は `domain/gateway.ts` の `nextAlarmAt`**
+   * (予約の取捨には «張り直した直後の即時 alarm» を避ける規則が入っており、手で作った入力で
+   * 踏めるようにしてある)。予約が無いときも 60 秒後に張るのは、evict されて `this.socket` が
+   * 消えた状態を自力で拾うため。
    */
   private async scheduleAlarm(): Promise<void> {
-    const state = await this.loadState();
-    if (state.kind === "fatal") {
+    const at = nextAlarmAt(
+      await this.loadState(),
+      {
+        heartbeatAt: await this.readNumber(KEY_HEARTBEAT_AT),
+        connectAt: await this.readNumber(KEY_CONNECT_AT),
+      },
+      Date.now(),
+      IDLE_ALARM_MS,
+    );
+    if (at === null) {
       await this.ctx.storage.deleteAlarm();
       return;
     }
-    const now = Date.now();
-    const candidates = [
-      await this.readNumber(KEY_HEARTBEAT_AT),
-      await this.readNumber(KEY_CONNECT_AT),
-    ].filter((at): at is number => at !== null);
-    const at = candidates.length > 0 ? Math.min(...candidates) : now + IDLE_ALARM_MS;
-    await this.ctx.storage.setAlarm(Math.max(at, now));
+    await this.ctx.storage.setAlarm(at);
   }
 }
 

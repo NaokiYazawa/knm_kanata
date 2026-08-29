@@ -218,6 +218,36 @@ export function gatewayIsHealthy(state: GatewayState): boolean {
   return state.kind === "live" && state.ready;
 }
 
+/**
+ * 次に alarm を鳴らす時刻。`null` = 鳴らさない (fatal。直すのは人なので待っても変わらない)。
+ *
+ * **`heartbeatAt` を候補にするのは `live` のときだけ**、というのがここの肝。
+ *
+ * heartbeat の予約は storage に残る。ところが **outbound WebSocket が DO を生かすのは
+ * 1 接続あたり最長 15 分** (Cloudflare の課金ドキュメント) なので、evict は例外ではなく
+ * 定常で起きる。evict されると予約だけが «過去の時刻» のまま残り、次に張り直した直後の
+ * `scheduleAlarm` がそれを拾って **即座に** alarm を鳴らす。すると HELLO が届くより先に
+ * 「connecting のまま alarm が回ってきた = 死んでいる」と判定され、**張ったばかりの接続を
+ * 自分で殺す**。自己修復はするが、張り直しのレート制限を無駄に食う。
+ *
+ * 張り直した直後は `connecting` なので、ここで候補から外れて `idleMs` (= alarm 1 周期) 後に
+ * なる。「1 周期待っても HELLO が来なければ死んでいる」という元の意図とも一致する。
+ */
+export function nextAlarmAt(
+  state: GatewayState,
+  reservations: { heartbeatAt: number | null; connectAt: number | null },
+  now: number,
+  idleMs: number,
+): number | null {
+  if (state.kind === "fatal") return null;
+  const candidates = [
+    state.kind === "live" ? reservations.heartbeatAt : null,
+    reservations.connectAt,
+  ].filter((at): at is number => at !== null);
+  const at = candidates.length > 0 ? Math.min(...candidates) : now + idleMs;
+  return Math.max(at, now);
+}
+
 /* ---- 遷移 ---- */
 
 function disconnected(attempt: number, resume: Resume | null, jitter: number): GatewayStep {
