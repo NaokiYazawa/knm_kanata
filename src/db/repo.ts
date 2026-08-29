@@ -237,6 +237,26 @@ export class Repo {
     return row ? toAsk(row) : null;
   }
 
+  /**
+   * そのスレッドで «まだ答えていない質問» を 1 つ引く。
+   *
+   * これがあると `/claude` の意味が 2 つになる: 待っている質問があればその **回答**、
+   * 無ければ新しいセッションの **起動**。スレッドが 1 本の会話に見えるのはこの分岐のおかげ。
+   */
+  async findOpenAskInThread(threadId: string): Promise<Ask | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT a.* FROM asks a
+           JOIN sessions s ON s.session_key = a.session_key
+          WHERE s.thread_id = ? AND a.answer IS NULL
+          ORDER BY a.created_at DESC
+          LIMIT 1`,
+      )
+      .bind(threadId)
+      .first<AskRow>();
+    return row ? toAsk(row) : null;
+  }
+
   async attachAskMessage(askId: string, messageId: string): Promise<void> {
     await this.db
       .prepare("UPDATE asks SET message_id = ? WHERE ask_id = ?")

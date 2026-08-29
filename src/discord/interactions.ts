@@ -1,5 +1,5 @@
 import { fireRoutine } from "../anthropic/routines";
-import { Repo } from "../db/repo";
+import { type Ask, Repo } from "../db/repo";
 import { MODAL_ANSWER_FIELD, parseAskAction } from "../domain/ask";
 import { newSessionKey } from "../domain/ids";
 import { isOwner } from "../domain/owner";
@@ -112,6 +112,23 @@ async function handleCommand(
   const task = optionString(interaction, "task");
   if (!task) return ephemeral("指示 (task) を入れてください。");
 
+  const channelId = interaction.channel?.id ?? interaction.channel_id;
+  if (!channelId) return ephemeral("チャンネルが分かりませんでした。");
+
+  // このスレッドに «まだ答えていない質問» があれば、新規起動ではなく **続き** として渡す。
+  // 待っているセッションは生きているので、同じ文脈のまま話が続く。
+  const repo = new Repo(env.DB);
+  const openAsk = await repo.findOpenAskInThread(channelId);
+  if (openAsk) {
+    const written = await repo.answerAsk(openAsk.askId, task, userId);
+    if (!written) return ephemeral("ほぼ同時に別の回答が入りました。");
+    ctx.waitUntil(continueThread(env, openAsk, task, userId));
+    return json({
+      type: REPLY_MESSAGE,
+      data: noticeMessage("↩️ 続きを渡しました", task, false),
+    });
+  }
+
   const projects = parseProjects(env.PROJECTS_JSON);
   if (isProjectsProblem(projects)) return ephemeral(`設定を読めません: ${projects.message}`);
 
@@ -129,9 +146,6 @@ async function handleCommand(
         : `プロジェクトを選んでください: ${names}`,
     );
   }
-
-  const channelId = interaction.channel?.id ?? interaction.channel_id;
-  if (!channelId) return ephemeral("チャンネルが分かりませんでした。");
 
   // ここから先は 3 秒に収まらない。先に «受け付けました» を返す。
   ctx.waitUntil(
@@ -269,7 +283,25 @@ async function handleModalSubmit(
   return json({ type: REPLY_UPDATE_MESSAGE, data: askAnsweredMessage(ask, answer, userId) });
 }
 
-/** 回答が入ったら «待ち» を解いて記録に残す。Claude へは ask_wait の返り値として届く。 */
+/**
+ * スレッドで «続き» を受けたときの後始末。押し口が残らないよう、質問メッセージを回答済みの姿へ
+ * 差し替える (ボタンが残ると、もう効かないものを押せてしまう)。
+ */
+async function continueThread(env: Env, ask: Ask, answer: string, userId: string): Promise<void> {
+  const repo = new Repo(env.DB);
+  const session = await repo.getSession(ask.sessionKey);
+  if (session && ask.messageId) {
+    const rest = new DiscordRest(env.DISCORD_BOT_TOKEN, env.DISCORD_APPLICATION_ID);
+    await rest.editMessage(
+      session.threadId ?? session.channelId,
+      ask.messageId,
+      askAnsweredMessage(ask, answer, userId),
+    );
+  }
+  await afterAnswer(env, ask.sessionKey, ask.askId, answer);
+}
+
+/** 回答が入ったら «待ち» を解いて記録に残す。Claude へは握っている ask_human の返り値として届く。 */
 async function afterAnswer(
   env: Env,
   sessionKey: string,

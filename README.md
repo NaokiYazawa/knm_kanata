@@ -6,6 +6,11 @@ Cloudflare Workers + D1 だけで動く。手元のマシンも Raspberry Pi も
 指示を投げると Anthropic のクラウド VM で Claude Code のセッションが立ち上がり、判断が要るところで Discord にボタンとフォームで聞きに来る。答えるとその場で続きが走る。
 ターミナルの `AskUserQuestion` と同じ体験を、スマホから受け取れる。
 
+**スレッドは 1 本の会話。** セッションは作業が終わっても終了せず、`ask_human` で
+「次は何をしますか？」と聞いて待つ。そこへ `/claude` で続きを投げると、**同じセッションが
+同じ文脈のまま**続きを始める。「おわり」と言うまで終わらない。待っている間は 1 つの
+ツール呼び出しを SSE で握っているだけなので、**トークンを消費しない**。
+
 ```txt
 /claude "Refactor the auth layer"
         │
@@ -114,6 +119,8 @@ routine の編集画面 → 環境の設定で:
 - **Environment variables** に
   - `KANATA_URL` = `https://<worker>`
   - `KANATA_TOKEN` = 1 で決めた値
+  - `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` = `0`
+    （**必須**。無いと `ask_human` が 2 分でバックグラウンドに回され、Claude が答えを待たずに先へ進む）
 
 ### 5. 対象リポジトリに置くもの
 
@@ -154,6 +161,12 @@ Allowed domains に入れるのは **スキーム無しのホスト名**。
 routine を API で作ると `allowed_tools` が既定の一覧で埋まり、そこに `mcp__kanata__*` は入らない。
 routine には承認する人がいないので、ログに `permission prompt mcp__kanata__ask_human` が出たまま
 進まなくなる。`mcp__kanata` (サーバー単位) と 3 つのツール名を足しておく。
+
+**③ `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0` が無いと、待ちが壊れる。**
+
+Claude Code は **2 分を超えたツール呼び出しをバックグラウンドタスクへ回す** (v2.1.212+)。
+*「Claude receives the task ID immediately and keeps working」* なので、`ask_human` が握って
+いる最中に Claude が先へ進む。Worker 側は正しく握れているのに壊れるので気づきにくい。
 
 ```bash
 # 切り分けは «存在しない session_key で ask_human を 1 回だけ呼ばせる» のが速い。

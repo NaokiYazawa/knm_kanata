@@ -29,9 +29,10 @@ export default defineWorkersConfig({
                 fireToken: "sk-ant-oat01-test",
               },
             ]),
-            // テストは待たない。時間で待つテストは負荷が高い環境で必ず落ちる。
-            ASK_WAIT_BUDGET_MS: "60",
+            // 握りの上限。1.5 秒あれば «回答が入る» 側は即座に、«握り切れた» 側も現実的な時間で終わる。
+            ASK_HOLD_MS: "1500",
             ASK_POLL_MS: "10",
+            ASK_PING_MS: "50",
           },
         },
       },

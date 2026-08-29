@@ -48,10 +48,11 @@ function bearerOk(c: { req: { header: (name: string) => string | undefined }; en
 
 app.post("/mcp", async (c) => {
   if (!bearerOk(c)) return c.text("unauthorized", 401);
-  return handleMcp(c.req.raw, c.env);
+  return handleMcp(c.req.raw, c.env, c.executionCtx);
 });
 
-// SSE 側のストリームは持たない。仕様上 405 を返してよい (クライアントは POST だけで動く)。
+// GET のストリームは持たない (サーバー起点の通知は要らない)。仕様上 405 を返してよい。
+// 待ちの SSE は POST の応答として返すので、こちらは使わない。
 app.get("/mcp", (c) => c.text("method not allowed", 405));
 
 app.post("/hooks/stop", async (c) => {

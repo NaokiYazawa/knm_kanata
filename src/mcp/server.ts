@@ -12,68 +12,96 @@ import type { Env } from "../env";
  * 公式 HTTP API が無い。だから «こちらから話しかける» のを諦め、**セッション側から聞かせる**。
  * ツール呼び出しは Claude の turn を止めるので、人が答えるまで待たせられる。
  *
- * 待ち方に 2 つの制約がある:
- *  - Cloudflare のエッジは応答が始まらないまま握り続けると切る (実測で 75 秒はもう危ない)
- *  - Claude Code は 2 分を超えたツール呼び出しをバックグラウンドタスクへ回す
- * どちらにも当たらないよう **1 回の待ちは短く切り上げ**、答えが無ければ «まだです» を返して
- * `ask_wait` を呼び直させる。待ち続ける責務を Claude 側のループに持たせる。
+ * ## 待ちにトークンを使わせない
+ *
+ * 素朴に «まだです» を返して呼び直させると、1 往復ごとに tool_result が返り、**そのたびに
+ * 全文脈を積んだリクエストが飛ぶ**。45 秒周期なら 1 時間の放置で約 80 turn。待っているだけで
+ * 果を食うのは実装の都合であって、仕様の必然ではない。
+ *
+ * そこで **1 回のツール呼び出しを握り続ける**。握っている間 API リクエストは 1 本も飛ばないので、
+ * 待ち時間のトークン消費は 0 になる。握るために外した壁は 4 つ:
+ *
+ * | 壁 | 実際の仕様 | 外し方 |
+ * |---|---|---|
+ * | エッジが 75 秒で 502 | 切っているのは «最初の 1 バイトが返らない» ため | **SSE で即座にストリームを開く** |
+ * | MCP の idle timeout | 応答も progress 通知も無い窓が続くと abort | ping と progress 通知を定期送信 |
+ * | 2 分で背後へ回る | «task ID を返して Claude は先へ進む» = 待ちが壊れる | 環境変数 `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0` |
+ * | ツールの wall-clock | per-server `timeout` (未設定なら約 28 時間) | `.mcp.json` の `timeout` |
+ *
+ * 最後の 1 つだけコードの外 (cloud environment の環境変数) にあるので、README に対で書いてある。
+ * 握りが切れたときのために `ask_wait` は残す — 保険であって、主経路ではない。
  */
 
 const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
 const LATEST_PROTOCOL_VERSION = PROTOCOL_VERSIONS[0];
 
+/** 1 回の握りの長さ。ここを超えたら «まだです» を返して `ask_wait` に引き継ぐ。 */
+export const DEFAULT_HOLD_MS = 15 * 60_000;
+/** 回答が入ったかを見に行く間隔。D1 を引くだけなので CPU はほぼ使わない。 */
+const DEFAULT_POLL_MS = 3_000;
 /**
- * 1 回の待ちの長さ。**45 秒**なのは実測の結果。
- *
- * 当初 75 秒にしていたが、実際に 5 分待たせたとき 4 回目の待ちで Cloudflare が
- * 502 (`origin_bad_gateway`) を返した。応答が始まらないまま長く握るとエッジ側で切られる、
- * その境界が 75 秒のすぐ上にある。Claude が呼び直して復帰はしたが、**復帰を運に任せない**。
- *
- * 短くしても壊れない — 待ち続ける責務は Claude 側の `ask_wait` ループにあり、
- * 1 往復増えるだけで人の体感は変わらない。
+ * 沈黙を作らない間隔。**これがエッジの限界より十分内側であることが握りの前提**で、
+ * `server.test.ts` の guard が伸ばす向きの変更を止める。
  */
-export const DEFAULT_WAIT_BUDGET_MS = 45_000;
-const DEFAULT_WAIT_POLL_MS = 2_000;
+const DEFAULT_PING_MS = 15_000;
 
-/** これを超えると 502 を踏み始める、実測の境界。 */
+/** 応答が始まらないまま握ると、これを超えたあたりで Cloudflare が 502 を返す (実測)。 */
 export const OBSERVED_EDGE_CUTOFF_MS = 75_000;
 
-/**
- * 待ちの長さを env で動かせるようにしてある。テストで 75 秒待たないためであり、
- * 本番で伸ばすためではない (75 秒より長くするとエッジ側で切られる)。
- */
-function waitConfig(env: Env): { budgetMs: number; pollMs: number } {
-  const budgetMs = Number(env.ASK_WAIT_BUDGET_MS ?? "");
-  const pollMs = Number(env.ASK_POLL_MS ?? "");
+export const DEFAULTS = {
+  holdMs: DEFAULT_HOLD_MS,
+  pollMs: DEFAULT_POLL_MS,
+  pingMs: DEFAULT_PING_MS,
+} as const;
+
+/** 実測しながら詰める値なので env で動かせる。テストは待たないために極端に短くする。 */
+function holdConfig(env: Env): { holdMs: number; pollMs: number; pingMs: number } {
+  const pick = (raw: string | undefined, fallback: number): number => {
+    const value = Number(raw ?? "");
+    return Number.isFinite(value) && value > 0 ? value : fallback;
+  };
   return {
-    budgetMs: Number.isFinite(budgetMs) && budgetMs > 0 ? budgetMs : DEFAULT_WAIT_BUDGET_MS,
-    pollMs: Number.isFinite(pollMs) && pollMs > 0 ? pollMs : DEFAULT_WAIT_POLL_MS,
+    holdMs: pick(env.ASK_HOLD_MS, DEFAULT_HOLD_MS),
+    pollMs: pick(env.ASK_POLL_MS, DEFAULT_POLL_MS),
+    pingMs: pick(env.ASK_PING_MS, DEFAULT_PING_MS),
   };
 }
 
-const SERVER_INFO = { name: "kanata", version: "0.1.0" };
+const SERVER_INFO = { name: "kanata", version: "0.2.0" };
+
+type JsonRpcId = string | number | null;
 
 type JsonRpcRequest = {
   jsonrpc?: string;
-  id?: string | number | null;
+  id?: JsonRpcId;
   method?: string;
   params?: Record<string, unknown>;
 };
 
-function result(id: string | number | null, value: unknown): Response {
-  return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: value }), {
+/** `waitUntil` だけを要求する。Hono と workers-types で ExecutionContext の形が違うため。 */
+export type Waitable = { waitUntil(promise: Promise<unknown>): void };
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
     headers: { "content-type": "application/json" },
   });
 }
 
-function rpcError(id: string | number | null, code: number, message: string): Response {
-  return new Response(JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } }), {
-    headers: { "content-type": "application/json" },
-  });
+function result(id: JsonRpcId, value: unknown): Response {
+  return json({ jsonrpc: "2.0", id, result: value });
 }
 
-function textResult(id: string | number | null, text: string, isError = false): Response {
-  return result(id, { content: [{ type: "text", text }], isError });
+function rpcError(id: JsonRpcId, code: number, message: string): Response {
+  return json({ jsonrpc: "2.0", id, error: { code, message } });
+}
+
+function toolResult(id: JsonRpcId, text: string, isError = false): unknown {
+  return { jsonrpc: "2.0", id, result: { content: [{ type: "text", text }], isError } };
+}
+
+function textResult(id: JsonRpcId, text: string, isError = false): Response {
+  return json(toolResult(id, text, isError));
 }
 
 const TOOLS = [
@@ -81,7 +109,7 @@ const TOOLS = [
     name: "ask_human",
     title: "依頼者に確認する",
     description:
-      "判断が要ることを依頼者に確認し、答えが返るまで待つ。選択肢はボタン、自由記述はフォームとして Discord に出る。返り値が status:pending なら同じ ask_id で ask_wait を呼び直すこと。",
+      "判断が要ることを依頼者に確認し、答えが返るまで待つ。選択肢はボタン、自由記述はフォームとして Discord に出る。答えが返るまでこの呼び出しは戻らない。まれに status:pending が返ったら、それは接続が切れただけなので同じ ask_id で ask_wait を呼び直すこと。",
     inputSchema: {
       type: "object",
       properties: {
@@ -92,10 +120,7 @@ const TOOLS = [
           items: { type: "string" },
           description: "選ばせたい選択肢 (最大 20 個)。自由に書いてほしいときは省略する",
         },
-        allow_free_text: {
-          type: "boolean",
-          description: "自由記述の口を出すか (既定 true)",
-        },
+        allow_free_text: { type: "boolean", description: "自由記述の口を出すか (既定 true)" },
       },
       required: ["session_key", "question"],
     },
@@ -114,7 +139,7 @@ const TOOLS = [
     name: "report",
     title: "進捗を伝える",
     description:
-      "依頼者のスレッドへ進捗を出す。kind は progress / blocked / done。done は最後に必ず 1 回呼ぶ。",
+      "依頼者のスレッドへ進捗を出す。kind は progress / blocked / done。done を呼ぶとスレッドの会話は終わる。",
     inputSchema: {
       type: "object",
       properties: {
@@ -127,7 +152,7 @@ const TOOLS = [
   },
 ];
 
-export async function handleMcp(request: Request, env: Env): Promise<Response> {
+export async function handleMcp(request: Request, env: Env, ctx?: Waitable): Promise<Response> {
   let body: JsonRpcRequest;
   try {
     body = (await request.json()) as JsonRpcRequest;
@@ -139,8 +164,8 @@ export async function handleMcp(request: Request, env: Env): Promise<Response> {
   const method = body.method ?? "";
 
   // 通知 (id なし) は受け取ったことだけ返す。
-  if (body.id === undefined || body.id === null) {
-    if (method.startsWith("notifications/")) return new Response(null, { status: 202 });
+  if ((body.id === undefined || body.id === null) && method.startsWith("notifications/")) {
+    return new Response(null, { status: 202 });
   }
 
   switch (method) {
@@ -162,25 +187,35 @@ export async function handleMcp(request: Request, env: Env): Promise<Response> {
     case "tools/list":
       return result(id, { tools: TOOLS });
     case "tools/call":
-      return callTool(id, body.params ?? {}, env);
+      return callTool(id, body.params ?? {}, env, ctx);
     default:
       return rpcError(id, -32601, `未対応のメソッド: ${method}`);
   }
 }
 
+/** progress 通知は «要求で渡されたトークン» にしか紐付けられない (仕様)。無ければ送らない。 */
+function progressToken(params: Record<string, unknown>): string | number | null {
+  const meta = params._meta;
+  if (typeof meta !== "object" || meta === null) return null;
+  const token = (meta as Record<string, unknown>).progressToken;
+  return typeof token === "string" || typeof token === "number" ? token : null;
+}
+
 async function callTool(
-  id: string | number | null,
+  id: JsonRpcId,
   params: Record<string, unknown>,
   env: Env,
+  ctx?: Waitable,
 ): Promise<Response> {
   const name = typeof params.name === "string" ? params.name : "";
   const args = (params.arguments ?? {}) as Record<string, unknown>;
+  const token = progressToken(params);
 
   switch (name) {
     case "ask_human":
-      return askHuman(id, args, env);
+      return askHuman(id, args, env, token, ctx);
     case "ask_wait":
-      return askWait(id, args, env);
+      return askWait(id, args, env, token, ctx);
     case "report":
       return report(id, args, env);
     default:
@@ -193,9 +228,11 @@ function target(session: Session): string {
 }
 
 async function askHuman(
-  id: string | number | null,
+  id: JsonRpcId,
   args: Record<string, unknown>,
   env: Env,
+  token: string | number | null,
+  ctx?: Waitable,
 ): Promise<Response> {
   const repo = new Repo(env.DB);
   const sessionKey = typeof args.session_key === "string" ? args.session_key : "";
@@ -238,55 +275,118 @@ async function askHuman(
   await repo.attachAskMessage(ask.askId, posted.value.id);
   await repo.setStatus(sessionKey, "waiting");
 
-  return waitForAnswer(id, repo, ask.askId, env);
+  return holdForAnswer(id, repo, ask.askId, env, token, ctx);
 }
 
 async function askWait(
-  id: string | number | null,
+  id: JsonRpcId,
   args: Record<string, unknown>,
   env: Env,
+  token: string | number | null,
+  ctx?: Waitable,
 ): Promise<Response> {
   const askId = typeof args.ask_id === "string" ? args.ask_id : "";
   const repo = new Repo(env.DB);
   const ask = await repo.getAsk(askId);
   if (!ask) return textResult(id, `ask_id «${askId}» が見つかりません。`, true);
-  return waitForAnswer(id, repo, askId, env);
+  return holdForAnswer(id, repo, askId, env, token, ctx);
 }
 
-async function waitForAnswer(
-  id: string | number | null,
+/**
+ * 答えが入るまで SSE のストリームを握り続ける。
+ *
+ * ストリームを **先に返してから** 書き続けるのが肝。最初の 1 バイトが出た時点でエッジの
+ * «応答が始まらない» タイマーは満たされ、あとは ping が沈黙を作らない。握っている間
+ * Claude 側では 1 つのツール呼び出しが未完了のまま止まっているだけなので、API リクエストは飛ばない。
+ */
+function holdForAnswer(
+  id: JsonRpcId,
   repo: Repo,
   askId: string,
   env: Env,
-): Promise<Response> {
-  const { budgetMs, pollMs } = waitConfig(env);
-  const deadline = Date.now() + budgetMs;
-  for (;;) {
-    const ask = await repo.getAsk(askId);
-    if (ask?.answer != null) {
-      return textResult(
-        id,
-        JSON.stringify({ status: "answered", ask_id: askId, answer: ask.answer }),
-      );
+  token: string | number | null,
+  ctx?: Waitable,
+): Response {
+  const { holdMs, pollMs, pingMs } = holdConfig(env);
+  const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+  const writer = writable.getWriter();
+  const encoder = new TextEncoder();
+
+  const write = (chunk: string) => writer.write(encoder.encode(chunk));
+  const sendMessage = (message: unknown) => write(`data: ${JSON.stringify(message)}\n\n`);
+
+  const pump = async (): Promise<void> => {
+    try {
+      // 最初の 1 バイト。これが出るまでがエッジの勝負どころ。
+      await write(": kanata\n\n");
+      const deadline = Date.now() + holdMs;
+      let lastPing = Date.now();
+      let ticks = 0;
+
+      for (;;) {
+        const ask = await repo.getAsk(askId);
+        if (ask?.answer != null) {
+          await sendMessage(
+            toolResult(
+              id,
+              JSON.stringify({ status: "answered", ask_id: askId, answer: ask.answer }),
+            ),
+          );
+          return;
+        }
+        if (Date.now() >= deadline) {
+          await sendMessage(
+            toolResult(
+              id,
+              JSON.stringify({
+                status: "pending",
+                ask_id: askId,
+                next: "接続を握れる上限に達しました。同じ ask_id で ask_wait を呼び直してください。まだ人が answer していません。",
+              }),
+            ),
+          );
+          return;
+        }
+        if (Date.now() - lastPing >= pingMs) {
+          // コメント行は沈黙を作らないため。progress 通知は MCP 側の idle 判定のため。
+          await write(": ping\n\n");
+          if (token !== null) {
+            ticks += 1;
+            await sendMessage({
+              jsonrpc: "2.0",
+              method: "notifications/progress",
+              params: {
+                progressToken: token,
+                progress: ticks,
+                message: "依頼者の回答を待っています",
+              },
+            });
+          }
+          lastPing = Date.now();
+        }
+        await new Promise((resolve) => setTimeout(resolve, pollMs));
+      }
+    } catch {
+      // 相手が切った / 書けなくなった。握りを諦めるだけで、回答は D1 に残るので ask_wait で拾える。
+    } finally {
+      await writer.close().catch(() => {});
     }
-    if (Date.now() + pollMs >= deadline) break;
-    await new Promise((resolve) => setTimeout(resolve, pollMs));
-  }
-  return textResult(
-    id,
-    JSON.stringify({
-      status: "pending",
-      ask_id: askId,
-      next: "同じ ask_id で ask_wait をもう一度呼んでください。まだ人が答えていません。",
-    }),
-  );
+  };
+
+  const running = pump();
+  // ストリームが閉じるまで Worker を生かす。await しない (先に Response を返す)。
+  ctx?.waitUntil(running);
+
+  return new Response(readable, {
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+    },
+  });
 }
 
-async function report(
-  id: string | number | null,
-  args: Record<string, unknown>,
-  env: Env,
-): Promise<Response> {
+async function report(id: JsonRpcId, args: Record<string, unknown>, env: Env): Promise<Response> {
   const repo = new Repo(env.DB);
   const sessionKey = typeof args.session_key === "string" ? args.session_key : "";
   const session = await repo.getSession(sessionKey);

@@ -4,7 +4,7 @@
       "type": "http",
       "url": "${KANATA_URL}/mcp",
       "headers": { "Authorization": "Bearer ${KANATA_TOKEN}" },
-      "timeout": 600000
+      "timeout": 3600000
     }
   }
 }
