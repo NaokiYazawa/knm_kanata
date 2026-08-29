@@ -1,0 +1,166 @@
+# 新しいプロジェクトを始める
+
+kanata 本体 (Worker・D1・Discord アプリ・cloud environment) が既に動いている前提で、
+**プロジェクトを 1 つ増やす手順**。所要 15 分ほど。
+
+初回のセットアップは [README](../README.md) を見る。
+
+```
+Discord チャンネル  ──  プロジェクト  ──  routine  ──  GitHub リポジトリ
+   #alpha                 alpha          trig_…        NaokiYazawa/alpha
+```
+
+紐付けを持つのは **`PROJECTS_JSON` (Worker の secret) だけ**。管理画面は無い。
+
+---
+
+## 0. 先に決める — モノレポか、複数リポジトリか
+
+**選んだリポジトリ (routine の `sources`) が、そのセッションが触れる範囲の境界**になる。
+非公開リポジトリは後から clone できず (認証はサンドボックスの外の proxy にあり sources に
+スコープされる)、`mcp__github__*` も sources 外は拒否される。**後から会話の中で足せない。**
+
+| | モノレポ (1 本) | 複数リポジトリ |
+|---|---|---|
+| 作業ディレクトリ | リポジトリ直下 | **`/home/user`** |
+| `.mcp.json` (kanata の配線) | 効く | 効かない → `cloud-setup.sh` が要る |
+| `.claude/settings.json` (フック) | 効く | 同上 |
+| **`CLAUDE.md`** | **起動時に読まれる** | **そのリポジトリのファイルを読むまで読まれない** |
+| `.claude/skills/` | 効く | 効く |
+| リポジトリを跨いだ読み書き | できない | できる |
+
+**迷ったらモノレポ。** 複数にするのは «api と web を 1 つの会話で直す» が実際に要るときだけ。
+複数を選ぶなら [§4](#4-cloud-environment-複数リポジトリのときだけ) を必ずやる。
+
+---
+
+## 1. GitHub — リポジトリに置くもの
+
+```bash
+cp -r /path/to/knm_kanata/repo-template/. /path/to/alpha/
+cd /path/to/alpha && git add .mcp.json .claude && git commit -m "kanata を繋ぐ"
+git push
+```
+
+| ファイル | 役目 |
+|---|---|
+| `.mcp.json` | Worker を MCP サーバーとして繋ぐ。**project スコープは確認プロンプト無しで読まれる** |
+| `.claude/settings.json` | フックの登録 (`PreToolUse` / `Stop` / `SessionEnd`) |
+| `.claude/hooks/kanata-hook.sh` | コンテキスト残量の通報と、完了通知の保険 |
+
+**リポジトリは public でも private でもよい** (clone は Claude の GitHub 連携が行う)。
+`.claude/skills/<名前>/SKILL.md` を置けばクラウドセッションでそのまま使える。
+
+---
+
+## 2. Discord — チャンネルを 1 つ作る
+
+1. サーバーにチャンネルを作る (例: `#alpha`)
+2. **チャンネル ID をコピー**
+   設定 → 詳細設定 → **開発者モード** を on → チャンネルを右クリック → **ID をコピー**
+3. bot がそのチャンネルを見えることを確かめる (見えなければチャンネルの権限に bot を足す)
+
+必要な bot 権限は初回の招待で付いている:
+`View Channels` / `Send Messages` / `Create Public Threads` / `Send Messages in Threads` /
+`Add Reactions`。
+
+**チャンネルは 1 プロジェクトに 1 つ。** 2 つのプロジェクトに同じチャンネルを結び付けると、
+kanata は行き先を決められないので設定ごと断る。
+
+---
+
+## 3. Anthropic — routine を 1 本作る
+
+[claude.ai/code/routines](https://claude.ai/code/routines) → **New routine**。
+
+1. **Name** — `kanata: alpha` のように
+2. **Instructions** — `pnpm exec node scripts/print-routine-prompt.ts` の出力をそのまま貼る
+3. **Select a repository** — 対象リポジトリを選ぶ。**ここが §0 で決めた境界**。
+   選ぶまで API トリガが押せない ("Select a repository first")
+4. **環境** — 既定の環境でよい (§4 は複数リポジトリのときだけ)
+5. **Select a trigger → API** → 保存 → もう一度開いて **Generate token**。
+   **トークンは一度しか表示されない**。URL と一緒に控える
+6. **⚠️ Connectors から要らないものを全部外す**
+
+> *"Claude can use all tools from these connectors — including writes — without asking for
+> permission during runs."*
+
+routine は**承認する人がいない状態で自律実行される**ので、付けたままだと事故の範囲がそこまで
+広がる。作成時に既存のコネクタが全部自動で付くので、**毎回外す**。
+
+### 作った後に 1 つ確かめる
+
+`allowed_tools` に `mcp__kanata` が入っていないと、**承認待ちで無言で止まる**
+(ログに `permission prompt mcp__kanata__ask_human` が出たまま進まない)。
+
+---
+
+## 4. cloud environment (複数リポジトリのときだけ)
+
+環境の **Setup script** に [`cloud-setup.sh`](../cloud-setup.sh) を貼る。
+中身はどのプロジェクトでも同じなので、**環境に 1 回貼れば以後は routine にリポジトリを
+並べるだけ**。
+
+**モノレポなら貼らない。** 貼ったままだと `/home/user/.claude/settings.json` が
+ユーザースコープの設定としても読まれ、同じフックが 2 回走りうる (実害は同じ値を 2 回書く
+だけだが、無駄)。
+
+環境変数と許可ドメインは全プロジェクト共通で、初回に入れたものがそのまま効く
+(`KANATA_URL` / `KANATA_TOKEN` / `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0` / Worker のホスト名)。
+
+---
+
+## 5. Worker — `PROJECTS_JSON` に 1 要素足す
+
+```json
+[
+  {
+    "name": "alpha",
+    "channelId": "1543…",
+    "repoUrl": "https://github.com/NaokiYazawa/alpha",
+    "fireUrl": "https://api.anthropic.com/v1/claude_code/routines/trig_…/fire",
+    "fireToken": "sk-ant-oat01-…"
+  }
+]
+```
+
+```bash
+wrangler secret put PROJECTS_JSON --profile linto   # 既存の配列に足した全文を貼る
+pnpm run commands:register                          # /claude の project 選択肢を更新 (任意)
+```
+
+複数リポジトリなら `"repos": ["NaokiYazawa/api", "NaokiYazawa/web"]` を足す
+(起動メッセージに出す**表示用**。正本は routine の `sources` で、ここに書いても触れるようには
+ならない)。モノレポなら書かなくてよい — `repoUrl` から作る。
+
+---
+
+## 6. 動かして確かめる
+
+`#alpha` で:
+
+```
+/claude task:「ping」
+```
+
+| 見えるべきもの | 見えなければ |
+|---|---|
+| 🚀 起動 (プロジェクト名とリポジトリが出る) | `PROJECTS_JSON` の `channelId` を確認 |
+| ▶️ 実行中 (セッションのリンク) | routine の fireUrl / fireToken |
+| Claude の返事 + 残量バー | 下の表へ |
+
+そのまま**スレッドに素で書く**と会話が続く。`/claude` はもう要らない。
+
+---
+
+## 詰まったときの見どころ
+
+| 症状 | 原因 |
+|---|---|
+| 「このチャンネルに結び付いたプロジェクトがありません」 | `channelId` が違う / 入れ忘れ |
+| 起動はするが Claude が何も言わない | `allowed_tools` に `mcp__kanata` が無く承認待ち |
+| `AUTH_HEADER_REJECTED (HTTP 403)` | **トークンではなく許可ドメイン**。`request blocked: no rule or allowlist` の方を読む |
+| 質問を出した直後に Claude が先へ進む | `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0` が無い |
+| 素の文を書いても反応しない | Gateway。`GET /gateway/status` の `fatalReason` を読む |
+| 複数リポジトリで `ask_human` が使えない | `cloud-setup.sh` を貼っていない |
+| 残量バーが出ない | フック。リポジトリに `.claude/` を commit したか |
