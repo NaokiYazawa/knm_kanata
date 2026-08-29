@@ -239,6 +239,7 @@ Worker のコードだけ正しくても動かない。routine と cloud environ
 | --- | --- |
 | cloud environment の Allowed domains | Worker のホスト名 (**スキーム無し**) |
 | cloud environment の環境変数 | `KANATA_URL` / `KANATA_TOKEN` |
+| routine が向いている環境 | **全プロジェクトで同じものを使う** (環境変数と許可ドメインは環境に付く) |
 | routine の `allowed_tools` | `mcp__kanata` と 3 つのツール名 (無いと承認待ちで固まる) |
 | Discord Developer Portal | **MESSAGE CONTENT INTENT** (無いと Gateway が close 4014 で切られる) |
 | 手元の `projects.json` | 本番の secret `PROJECTS_JSON` (**読み出せないので手元が正本**。`projects:push` で送る) |

@@ -77,7 +77,10 @@ kanata は行き先を決められないので設定ごと断る。
 2. **Instructions** — `pnpm exec node scripts/print-routine-prompt.ts` の出力をそのまま貼る
 3. **Select a repository** — 対象リポジトリを選ぶ。**ここが §0 で決めた境界**。
    選ぶまで API トリガが押せない ("Select a repository first")
-4. **環境** — 既定の環境でよい (§4 は複数リポジトリのときだけ)
+4. **環境** — **既に使っている環境をそのまま選ぶ**。`KANATA_URL` / `KANATA_TOKEN` と
+   許可ドメインは**環境に付く**ので、プロジェクトごとに入れ直す必要はない。
+   **新しい「Default」を作らせない** — 空の環境を向くと `KANATA_URL` が無く、
+   `${KANATA_URL}/mcp` が不正な URL になって `mcp__kanata__*` が丸ごと消える
 5. **Select a trigger → API** → 保存 → もう一度開いて **Generate token**。
    **トークンは一度しか表示されない**。URL と一緒に控える
 6. **⚠️ Connectors から要らないものを全部外す**
@@ -177,6 +180,7 @@ pnpm run commands:register                   # /claude の project 選択肢を�
 | --- | --- |
 | 「このチャンネルに結び付いたプロジェクトがありません」 | `channelId` が違う / 入れ忘れ |
 | 起動はするが Claude が何も言わない | `allowed_tools` に `mcp__kanata` が無く承認待ち |
+| 「KANATA_URL/KANATA_TOKEN が環境変数に無い」と言って終わる | routine が**別の環境**を向いている。既存の環境に付け替える |
 | `AUTH_HEADER_REJECTED (HTTP 403)` | **トークンではなく許可ドメイン**。`request blocked: no rule or allowlist` の方を読む |
 | 質問を出した直後に Claude が先へ進む | `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0` が無い |
 | 素の文を書いても反応しない | Gateway。`GET /gateway/status` の `fatalReason` を読む |
