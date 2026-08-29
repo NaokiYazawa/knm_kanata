@@ -40,6 +40,10 @@ export default defineWorkersConfig({
                 fireToken: "sk-ant-oat01-other",
               },
             ]),
+            // **分母をここで固定する。** wrangler.jsonc の値は本番のモデルに合わせて動く
+            // (いまは 1M) ので、それを読むと «描画の期待値» が本番の都合で壊れる。
+            // 分母そのものの扱いは domain/context.test.ts が両方の値で見ている。
+            CONTEXT_WINDOW_TOKENS: "200000",
             // 握りの上限。1.5 秒あれば «回答が入る» 側は即座に、«握り切れた» 側も現実的な時間で終わる。
             ASK_HOLD_MS: "1500",
             ASK_POLL_MS: "10",

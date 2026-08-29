@@ -8,7 +8,12 @@
   // 秘密ではないので設定に置く。Public Key / Bot Token / 自分の Discord ユーザー ID は
   // `wrangler secret put` 側 (README 参照)。
   "vars": {
-    "DISCORD_APPLICATION_ID": "1543076100442300506"
+    "DISCORD_APPLICATION_ID": "1543076100442300506",
+
+    // 残量バーの分母。**routine のモデルと対で維持する** — `claude-opus-5[1m]` は 1M なので
+    // 200,000 のままだと «203%» のような読めない値になる (実測でそうなった)。
+    // モデルを 200k のものへ戻すなら、ここも戻す。
+    "CONTEXT_WINDOW_TOKENS": "1000000"
   },
 
   "d1_databases": [

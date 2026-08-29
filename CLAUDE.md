@@ -47,6 +47,7 @@ cloud session は **サブスク席の枠のまま** なので、こちらを使
 | `index.ts` の `/hooks/*` のパス | 同じ hook スクリプトが叩く URL |
 | `repo-template/.claude/settings.json` の hook 名 | スクリプト内の `hook_event_name` の分岐 |
 | `domain/prompt.ts` の `ROUTINE_PROMPT` | claude.ai の routine に貼ってある本文 |
+| `wrangler.jsonc` の `CONTEXT_WINDOW_TOKENS` | routine の `model` (1M のモデルなら 1000000) |
 | `mcp/server.ts` の «落ちたら呼び直す» 契約 | `ROUTINE_PROMPT` とツール説明が言う復帰手順 |
 | `domain/prompt.ts` の `buildFireText` | 同上 (payload の 1 行目を session_key として読む前提) |
 | `mcp/server.ts` のツール名 | `ROUTINE_PROMPT` が名指ししている `mcp__kanata__*` |

@@ -77,13 +77,15 @@ kanata は行き先を決められないので設定ごと断る。
 2. **Instructions** — `pnpm exec node scripts/print-routine-prompt.ts` の出力をそのまま貼る
 3. **Select a repository** — 対象リポジトリを選ぶ。**ここが §0 で決めた境界**。
    選ぶまで API トリガが押せない ("Select a repository first")
-4. **環境** — **既に使っている環境をそのまま選ぶ**。`KANATA_URL` / `KANATA_TOKEN` と
+4. **モデル** — `claude-opus-5[1m]` (Opus 5 の 1M コンテキスト)。Team プランならサブスクに
+   含まれる。**分母 `CONTEXT_WINDOW_TOKENS` と対**なので、200k のモデルにするならそちらも戻す
+5. **環境** — **既に使っている環境をそのまま選ぶ**。`KANATA_URL` / `KANATA_TOKEN` と
    許可ドメインは**環境に付く**ので、プロジェクトごとに入れ直す必要はない。
    **新しい「Default」を作らせない** — 空の環境を向くと `KANATA_URL` が無く、
    `${KANATA_URL}/mcp` が不正な URL になって `mcp__kanata__*` が丸ごと消える
-5. **Select a trigger → API** → 保存 → もう一度開いて **Generate token**。
+6. **Select a trigger → API** → 保存 → もう一度開いて **Generate token**。
    **トークンは一度しか表示されない**。URL と一緒に控える
-6. **⚠️ Connectors から要らないものを全部外す**
+7. **⚠️ Connectors から要らないものを全部外す**
 
 > *"Claude can use all tools from these connectors — including writes — without asking for
 > permission during runs."*
