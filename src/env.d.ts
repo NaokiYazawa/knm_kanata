@@ -1,6 +1,9 @@
 export type Env = {
   DB: D1Database;
 
+  /** Discord Gateway への常時接続を持つ DO。`idFromName("main")` の 1 つだけを使う。 */
+  GATEWAY: DurableObjectNamespace;
+
   /** Discord アプリの Public Key (Interactions の署名検証)。 */
   DISCORD_PUBLIC_KEY: string;
   DISCORD_APPLICATION_ID: string;

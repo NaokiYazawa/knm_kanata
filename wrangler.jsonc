@@ -18,5 +18,16 @@
       "database_id": "4cd83b57-23a7-4cbc-8e3f-7d403dff4455",
       "migrations_dir": "migrations"
     }
-  ]
+  ],
+
+  // 素の文 (MESSAGE_CREATE) は WebSocket でしか来ないので、接続を持ち続ける DO を 1 つ置く。
+  // outbound WebSocket は hibernation 非対応 = 繋いでいる間ずっと duration 課金なので、
+  // **常時 1 つだけ**という前提でコストが成り立っている (月 約 324,000 / 含有 400,000 GB-s)。
+  "durable_objects": {
+    "bindings": [{ "name": "GATEWAY", "class_name": "DiscordGatewayDO" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DiscordGatewayDO"] }],
+
+  // DO は自分では起動できない。evict されて alarm ごと消えた状態から戻す watchdog。
+  "triggers": { "crons": ["*/5 * * * *"] }
 }

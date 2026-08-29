@@ -147,7 +147,7 @@ describe("ask_human の握り", () => {
     const response = await handleMcp(askCall(sessionKey, { options: ["A案", "B案"] }), env);
     expect(response.headers.get("content-type")).toContain("text/event-stream");
 
-    const ask = await repo.findLiveAskInThread("th-1", new Date(0).toISOString());
+    const ask = await repo.findOpenAsk(sessionKey);
     expect(ask?.messageId).toBe("msg-1");
     expect((await repo.getSession(sessionKey))?.status).toBe("waiting");
 
@@ -157,6 +157,43 @@ describe("ask_human の握り", () => {
     const messages = await readSse(response);
     const last = messages[messages.length - 1];
     expect(JSON.parse(toolText(last))).toMatchObject({ status: "answered", answer: "A案" });
+  });
+
+  it("作業中に書かれた文が溜まっていたら、握らずに即座にそれを答えとして返す", async () => {
+    // ターミナルの Claude Code で «作業中に打った文が次のターンで届く» のと同じ。
+    // これが無いと «書いたのに Claude が同じことをまた聞いてくる» になる。
+    const sessionKey = "KANATA-5555666677778888";
+    const repo = await seedSession(sessionKey, "th-q");
+    await repo.queueMessage({
+      sessionKey,
+      threadId: "th-q",
+      authorId: "owner-1",
+      messageId: "m-9",
+      body: "この後 README も直して",
+    });
+    expectDiscordPost("th-q", "msg-q");
+    // 質問を «回答済み» の姿へ差し替え、預かった印を渡した印へ付け替える。
+    replies.set("https://discord.com/api/v10/channels/th-q/messages/msg-q", {
+      status: 200,
+      body: { id: "msg-q" },
+    });
+    for (const emoji of ["%E2%9C%85", "%F0%9F%91%80"]) {
+      replies.set(`https://discord.com/api/v10/channels/th-q/messages/m-9/reactions/${emoji}/@me`, {
+        status: 204,
+        body: null,
+      });
+    }
+
+    const response = await handleMcp(askCall(sessionKey), env);
+    // 握らない = SSE ではなく素の JSON で即座に返る。
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(JSON.parse(toolText(await response.json()))).toMatchObject({
+      status: "answered",
+      answer: "この後 README も直して",
+    });
+    expect((await repo.getSession(sessionKey))?.status).toBe("running");
+    // 二度は渡らない。
+    expect(await repo.takeQueued(sessionKey)).toBeNull();
   });
 
   it("握り切れなかったら pending を返して ask_wait に引き継ぐ", async () => {

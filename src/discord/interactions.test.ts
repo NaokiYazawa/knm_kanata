@@ -4,9 +4,13 @@ import { Repo } from "../db/repo";
 import { handleInteraction } from "./interactions";
 
 /**
- * `/claude` は 1 つのコマンドで 2 つの意味を持つ。
- * 待っている質問があればその **回答**、無ければ新しいセッションの **起動**。
- * スレッドが 1 本の会話に見えるかどうかは、この分岐が正しいかにかかっている。
+ * `/claude` は 2 つの意味を持つ:
+ *
+ * - kanata が **知らない** チャンネル / スレッド → 新しいセッションの **起動**
+ * - kanata が **知っている** スレッド → 素の文とまったく同じ扱い (回答 / 溜める / 起こし直す)
+ *
+ * 後者を `discord/inbound.ts` に寄せてあるのが肝で、**同じスレッドに同じ文を書いたのに
+ * コマンドか素の文かで結果が変わってはいけない**。ここではその «同じ口へ入っているか» を見る。
  */
 
 let seen: string[] = [];
@@ -14,6 +18,9 @@ let replies: Map<string, { status: number; body: unknown }>;
 let pending: Promise<unknown>[] = [];
 
 const ctx = { waitUntil: (p: Promise<unknown>) => void pending.push(p) };
+
+const ORIGINAL = "https://discord.com/api/v10/webhooks/app-1/itok/messages/@original";
+const FIRE = "https://api.anthropic.com/v1/claude_code/routines/trig_test/fire";
 
 beforeEach(() => {
   seen = [];
@@ -47,8 +54,18 @@ async function settle(): Promise<void> {
   await Promise.all(pending);
 }
 
+function firedOk(): void {
+  replies.set(FIRE, {
+    status: 200,
+    body: {
+      claude_code_session_id: "session_x",
+      claude_code_session_url: "https://claude.ai/code/session_x",
+    },
+  });
+}
+
 describe("/claude", () => {
-  it("待っている質問があれば、新規起動せず «続き» として渡す", async () => {
+  it("待っている質問があれば、新規起動せず «回答» として渡す", async () => {
     const repo = new Repo(env.DB);
     await repo.createSession({
       sessionKey: "KANATA-1234123412341234",
@@ -68,15 +85,16 @@ describe("/claude", () => {
     await repo.attachAskMessage(ask.askId, "msg-live");
     await repo.setStatus("KANATA-1234123412341234", "waiting");
 
-    // 質問メッセージを «回答済み» の姿へ差し替える PATCH だけが飛ぶ。
+    // 本人の発言としての echo と、質問メッセージを «回答済み» の姿へ差し替える PATCH。
+    replies.set(ORIGINAL, { status: 200, body: { id: "msg-echo", channel_id: "th-live" } });
     replies.set("https://discord.com/api/v10/channels/th-live/messages/msg-live", {
       status: 200,
       body: { id: "msg-live" },
     });
 
+    // 3 秒に収まらないので «受け付けました» を先に返す。
     const response = await handleInteraction(command("テストも書いて", "th-live"), env, ctx);
-    const body = (await response.json()) as { type: number };
-    expect(body.type).toBe(4);
+    expect(((await response.json()) as { type: number }).type).toBe(5);
 
     await settle();
 
@@ -84,21 +102,12 @@ describe("/claude", () => {
     expect((await repo.getAsk(ask.askId))?.answer).toBe("テストも書いて");
     expect((await repo.getSession("KANATA-1234123412341234"))?.status).toBe("running");
     expect((await repo.listRecentSessions(10)).length).toBe(1);
-    expect(seen).toEqual(["https://discord.com/api/v10/channels/th-live/messages/msg-live"]);
+    expect(seen).not.toContain(FIRE);
   });
 
-  it("待っている質問が無ければ、新しいセッションを起動する", async () => {
-    replies.set("https://discord.com/api/v10/webhooks/app-1/itok/messages/@original", {
-      status: 200,
-      body: { id: "msg-new", channel_id: "th-new" },
-    });
-    replies.set("https://api.anthropic.com/v1/claude_code/routines/trig_test/fire", {
-      status: 200,
-      body: {
-        claude_code_session_id: "session_x",
-        claude_code_session_url: "https://claude.ai/code/session_x",
-      },
-    });
+  it("kanata が知らないスレッドなら、新しいセッションを起動する", async () => {
+    replies.set(ORIGINAL, { status: 200, body: { id: "msg-new", channel_id: "th-new" } });
+    firedOk();
     replies.set("https://discord.com/api/v10/channels/th-new/messages", {
       status: 200,
       body: { id: "msg-note" },
@@ -108,14 +117,15 @@ describe("/claude", () => {
     expect(((await response.json()) as { type: number }).type).toBe(5); // 先に «受け付けました»
     await settle();
 
-    const sessions = await new Repo(env.DB).listRecentSessions(10);
-    const created = sessions.find((s) => s.prompt === "はじめて");
+    const created = (await new Repo(env.DB).listRecentSessions(10)).find(
+      (s) => s.prompt === "はじめて",
+    );
     expect(created?.status).toBe("running");
     expect(created?.ccSessionUrl).toBe("https://claude.ai/code/session_x");
-    expect(seen).toContain("https://api.anthropic.com/v1/claude_code/routines/trig_test/fire");
+    expect(seen).toContain(FIRE);
   });
 
-  it("死んだセッションの未回答の質問は «続き» として扱わない (スレッドの穴を作らない)", async () => {
+  it("死んだセッションの未回答の質問は «回答» にせず、同じスレッドで起こし直す", async () => {
     const repo = new Repo(env.DB);
     await repo.createSession({
       sessionKey: "KANATA-deaddeaddeaddead",
@@ -137,29 +147,48 @@ describe("/claude", () => {
       .bind(new Date(Date.now() - 60 * 60_000).toISOString(), "KANATA-deaddeaddeaddead")
       .run();
 
-    replies.set("https://discord.com/api/v10/webhooks/app-1/itok/messages/@original", {
-      status: 200,
-      body: { id: "msg-d", channel_id: "th-dead" },
-    });
-    replies.set("https://api.anthropic.com/v1/claude_code/routines/trig_test/fire", {
-      status: 200,
-      body: {
-        claude_code_session_id: "session_d",
-        claude_code_session_url: "https://claude.ai/code/session_d",
-      },
-    });
+    replies.set(ORIGINAL, { status: 200, body: { id: "msg-d", channel_id: "th-dead" } });
+    firedOk();
     replies.set("https://discord.com/api/v10/channels/th-dead/messages", {
       status: 200,
       body: { id: "msg-dn" },
     });
 
     const response = await handleInteraction(command("これは新しい話", "th-dead"), env, ctx);
-    // 回答ではなく «起動» として扱われる。
     expect(((await response.json()) as { type: number }).type).toBe(5);
     await settle();
 
+    // 古い質問には答えず、同じスレッドの中で 2 本目が立つ。
     expect((await repo.getAsk("ask_0000000000000dead"))?.answer).toBeNull();
-    expect(seen).toContain("https://api.anthropic.com/v1/claude_code/routines/trig_test/fire");
+    expect(seen).toContain(FIRE);
+    const started = (await repo.listRecentSessions(10)).find((s) => s.prompt === "これは新しい話");
+    expect(started?.threadId).toBe("th-dead");
+  });
+
+  it("作業中のスレッドでは起動せず、預かる", async () => {
+    const repo = new Repo(env.DB);
+    await repo.createSession({
+      sessionKey: "KANATA-0f0f0f0f0f0f0f0f",
+      project: "demo",
+      prompt: "実装中",
+      requesterId: "owner-1",
+      channelId: "ch-1",
+    });
+    await repo.attachThread("KANATA-0f0f0f0f0f0f0f0f", "th-busy");
+    await repo.setStatus("KANATA-0f0f0f0f0f0f0f0f", "running");
+
+    replies.set(ORIGINAL, { status: 200, body: { id: "msg-b", channel_id: "th-busy" } });
+
+    await handleInteraction(command("この後 README も", "th-busy"), env, ctx);
+    await settle();
+
+    // 起動しない。次に Claude が聞きに来たときに渡す。
+    expect(seen).not.toContain(FIRE);
+    expect((await repo.listRecentSessions(10)).length).toBe(1);
+    expect(await repo.takeQueued("KANATA-0f0f0f0f0f0f0f0f")).toMatchObject({
+      text: "この後 README も",
+      authorId: "owner-1",
+    });
   });
 
   it("持ち主以外は何もできず、自分の ID を返してもらえる", async () => {

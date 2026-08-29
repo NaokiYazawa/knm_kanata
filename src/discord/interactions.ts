@@ -1,12 +1,12 @@
-import { fireRoutine } from "../anthropic/routines";
-import { type Ask, Repo } from "../db/repo";
+import { Repo } from "../db/repo";
 import { MODAL_ANSWER_FIELD, parseAskAction } from "../domain/ask";
 import { newSessionKey } from "../domain/ids";
 import { isOwner } from "../domain/owner";
 import { findProject, isProjectsProblem, parseProjects } from "../domain/projects";
-import { buildFireText } from "../domain/prompt";
 import type { Env } from "../env";
+import { fireAndAnnounce } from "../session/launch";
 import { answerModal, askAnsweredMessage, noticeMessage, startedMessage } from "./components";
+import { applyInbound } from "./inbound";
 import { DiscordRest, isThreadChannelType } from "./rest";
 
 /**
@@ -19,16 +19,6 @@ import { DiscordRest, isThreadChannelType } from "./rest";
 
 /** `waitUntil` だけを要求する。Hono と workers-types で ExecutionContext の形が違うため。 */
 type Waitable = { waitUntil(promise: Promise<unknown>): void };
-
-/**
- * 生存の印がこれより古いセッションは死んだものとして扱う。握りは 15 秒ごとに印を更新するので、
- * 生きていれば必ず内側に入る。長めに取ってあるのは «一瞬の詰まりで会話が切れた» を避けるため。
- */
-const LIVE_WINDOW_MS = 3 * 60_000;
-
-function liveSince(): string {
-  return new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
-}
 
 const EPHEMERAL = 64;
 
@@ -125,19 +115,13 @@ async function handleCommand(
   const channelId = interaction.channel?.id ?? interaction.channel_id;
   if (!channelId) return ephemeral("チャンネルが分かりませんでした。");
 
-  // このスレッドに «まだ答えていない質問» があれば、新規起動ではなく **続き** として渡す。
-  // 待っているセッションは生きているので、同じ文脈のまま話が続く。
-  const repo = new Repo(env.DB);
-  const openAsk = await repo.findLiveAskInThread(channelId, liveSince());
-  if (openAsk) {
-    const written = await repo.answerAsk(openAsk.askId, task, userId);
-    if (!written) return ephemeral("ほぼ同時に別の回答が入りました。");
-    ctx.waitUntil(continueThread(env, openAsk, task, userId));
-    // 本人の発言として見えるように、枠を付けず地の文で返す。
-    return json({
-      type: REPLY_MESSAGE,
-      data: { content: task.slice(0, 2000), allowed_mentions: { parse: [] } },
-    });
+  // kanata が知っているスレッドの中なら、**素の文とまったく同じ扱い**にする
+  // (回答 / 溜める / 起こし直す)。同じスレッドに同じ文を書いたのに、コマンドか素の文かで
+  // 結果が変わってはいけない。判断は `domain/inbound.ts` が 1 つだけ持つ。
+  const known = await new Repo(env.DB).findSessionByThread(channelId);
+  if (known) {
+    ctx.waitUntil(continueInThread(env, interaction.token, channelId, task, userId));
+    return json({ type: REPLY_DEFERRED_MESSAGE });
   }
 
   const projects = parseProjects(env.PROJECTS_JSON);
@@ -221,22 +205,61 @@ async function startSession(input: {
     return;
   }
 
-  const fired = await fireRoutine(project, buildFireText(sessionKey, input.prompt));
-  const target = threadId ?? input.channelId;
+  await fireAndAnnounce(env, {
+    sessionKey,
+    project,
+    prompt: input.prompt,
+    target: threadId ?? input.channelId,
+  });
+}
 
-  if (!fired.ok) {
-    await repo.setStatus(sessionKey, "failed");
-    await repo.addEvent(sessionKey, "error", fired.detail);
-    await rest.postMessage(target, noticeMessage("⛔ 起動に失敗しました", fired.detail, true));
+/**
+ * kanata が知っているスレッドの中で `/claude` が叩かれたとき。
+ *
+ * **先に本人の発言として出してから**中身を進める。素の文なら Discord に本人の発言が既に
+ * 見えているが、コマンドでは見えないので、ここで echo しないと «誰が何を言ったのか»
+ * 分からないまま kanata の返事だけが並ぶ。
+ */
+async function continueInThread(
+  env: Env,
+  interactionToken: string,
+  threadId: string,
+  text: string,
+  userId: string,
+): Promise<void> {
+  const rest = new DiscordRest(env.DISCORD_BOT_TOKEN, env.DISCORD_APPLICATION_ID);
+  await rest.editOriginalResponse(interactionToken, {
+    content: text.slice(0, 2000),
+    allowed_mentions: { parse: [] },
+  });
+
+  const outcome = await applyInbound(env, {
+    threadId,
+    // 印 (リアクション) を付ける相手が居ない。コマンドの応答自体は bot の投稿なので。
+    messageId: null,
+    authorId: userId,
+    authorIsBot: false,
+    text,
+  });
+
+  if (outcome.kind === "queued") {
+    await rest.editOriginalResponse(interactionToken, {
+      content:
+        `${text.slice(0, 1900)}\n-# 預かりました。Claude が次に聞きに来たときに渡します`.slice(
+          0,
+          2000,
+        ),
+      allowed_mentions: { parse: [] },
+    });
     return;
   }
-
-  await repo.attachCloudSession(sessionKey, fired.sessionId, fired.sessionUrl);
-  await repo.addEvent(sessionKey, "progress", `セッション開始: ${fired.sessionUrl}`);
-  await rest.postMessage(
-    target,
-    noticeMessage("▶️ 実行中", `[セッションを開く](${fired.sessionUrl})\n\`${sessionKey}\``, false),
-  );
+  if (outcome.kind === "ignored" || outcome.kind === "failed") {
+    // 黙って消えるのが一番困る。何もしなかった理由をその場に残す。
+    await rest.editOriginalResponse(
+      interactionToken,
+      noticeMessage("⛔ 進みませんでした", outcome.reason, true),
+    );
+  }
 }
 
 /* ---- ボタン ---- */
@@ -292,24 +315,6 @@ async function handleModalSubmit(
 
   ctx.waitUntil(afterAnswer(env, ask.sessionKey, ask.askId, answer));
   return json({ type: REPLY_UPDATE_MESSAGE, data: askAnsweredMessage(ask, answer, userId) });
-}
-
-/**
- * スレッドで «続き» を受けたときの後始末。押し口が残らないよう、質問メッセージを回答済みの姿へ
- * 差し替える (ボタンが残ると、もう効かないものを押せてしまう)。
- */
-async function continueThread(env: Env, ask: Ask, answer: string, userId: string): Promise<void> {
-  const repo = new Repo(env.DB);
-  const session = await repo.getSession(ask.sessionKey);
-  if (session && ask.messageId) {
-    const rest = new DiscordRest(env.DISCORD_BOT_TOKEN, env.DISCORD_APPLICATION_ID);
-    await rest.editMessage(
-      session.threadId ?? session.channelId,
-      ask.messageId,
-      askAnsweredMessage(ask, answer, userId),
-    );
-  }
-  await afterAnswer(env, ask.sessionKey, ask.askId, answer);
 }
 
 /** 回答が入ったら «待ち» を解いて記録に残す。Claude へは握っている ask_human の返り値として届く。 */

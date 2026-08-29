@@ -98,4 +98,28 @@ export class DiscordRest {
       "bot",
     );
   }
+
+  /**
+   * 受け取ったこと・渡したことの印。**チャットに 1 行足さずに状態を見せる**ための口で、
+   * 「受け取りました」を毎回投稿すると素の会話が bot の相槌で埋まる。
+   */
+  addReaction(channelId: string, messageId: string, emoji: string): Promise<DiscordResult<void>> {
+    return this.call(
+      `/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`,
+      { method: "PUT" },
+      "bot",
+    );
+  }
+
+  removeOwnReaction(
+    channelId: string,
+    messageId: string,
+    emoji: string,
+  ): Promise<DiscordResult<void>> {
+    return this.call(
+      `/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`,
+      { method: "DELETE" },
+      "bot",
+    );
+  }
 }

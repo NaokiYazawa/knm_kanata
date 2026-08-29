@@ -1,5 +1,6 @@
 import { Repo, type Session } from "../db/repo";
-import { askMessage, reportMessage } from "../discord/components";
+import { askAnsweredMessage, askMessage, reportMessage } from "../discord/components";
+import { markDelivered } from "../discord/inbound";
 import { DiscordRest } from "../discord/rest";
 import { isAskProblem, validateAsk } from "../domain/ask";
 import { newAskId } from "../domain/ids";
@@ -274,6 +275,26 @@ async function askHuman(
   }
   await repo.attachAskMessage(ask.askId, posted.value.id);
   await repo.setStatus(sessionKey, "waiting");
+
+  // 作業中に書かれた文が溜まっていれば、**待たずに**それを答えとして返す。
+  // ターミナルの Claude Code で «作業中に打った文が次のターンで届く» のと同じ振る舞いで、
+  // これが無いと «書いたのに Claude が同じことをまた聞いてくる» になる。
+  const queued = await repo.takeQueued(sessionKey);
+  if (queued && (await repo.answerAsk(ask.askId, queued.text, queued.authorId))) {
+    const where = target(session);
+    await rest.editMessage(
+      where,
+      posted.value.id,
+      askAnsweredMessage(ask, queued.text, queued.authorId),
+    );
+    await markDelivered(rest, where, queued.messageIds);
+    await repo.addEvent(sessionKey, "progress", `${ask.askId} に回答 (預かっていた分)`);
+    await repo.setStatus(sessionKey, "running");
+    return textResult(
+      id,
+      JSON.stringify({ status: "answered", ask_id: ask.askId, answer: queued.text }),
+    );
+  }
 
   return holdForAnswer(id, repo, ask.askId, sessionKey, env, token, ctx);
 }

@@ -34,6 +34,15 @@ export type Ask = Readonly<{
   createdAt: string;
 }>;
 
+/** 溜まっていた文をまとめて 1 つの «次の指示» に畳んだもの。 */
+export type QueuedBatch = Readonly<{
+  text: string;
+  /** 最初に書いた人。回答の記録に残す。 */
+  authorId: string;
+  /** 印 (リアクション) を付け替える相手。`/claude` 経由で溜めたぶんは空。 */
+  messageIds: readonly string[];
+}>;
+
 type SessionRow = {
   session_key: string;
   project: string;
@@ -153,6 +162,20 @@ export class Repo {
     return row ? toSession(row) : null;
   }
 
+  /**
+   * そのスレッドの **最新の** セッション。素の文が届いたとき «誰との会話か» を引くのに使う。
+   *
+   * 1 スレッドに複数のセッションが並ぶことがある (前のが終わった後に書き足すと新しく起こす)。
+   * 会話として続いているのは常に最後の 1 つなので、それだけを返す。
+   */
+  async findSessionByThread(threadId: string): Promise<Session | null> {
+    const row = await this.db
+      .prepare("SELECT * FROM sessions WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1")
+      .bind(threadId)
+      .first<SessionRow>();
+    return row ? toSession(row) : null;
+  }
+
   async attachThread(sessionKey: string, threadId: string): Promise<void> {
     await this.db
       .prepare("UPDATE sessions SET thread_id = ?, updated_at = ? WHERE session_key = ?")
@@ -237,36 +260,23 @@ export class Repo {
     return row ? toAsk(row) : null;
   }
 
-  /**
-   * そのスレッドで «**生きている**セッションが待っている質問» を 1 つ引く。
-   *
-   * これがあると `/claude` の意味が 2 つになる: 待っている質問があればその **回答**、
-   * 無ければ新しいセッションの **起動**。スレッドが 1 本の会話に見えるのはこの分岐のおかげ。
-   *
-   * 生死を見るのが肝。落ちたセッションの未回答の質問が残っていると、以後そのスレッドの
-   * `/claude` を永久に飲み込む «穴» になる (答えを受け取る相手がもう居ない)。
-   * 握っている間だけ `touchSession` が印を更新するので、それが新しいものだけを «生きている» とみなす。
-   */
-  async findLiveAskInThread(threadId: string, freshSinceIso: string): Promise<Ask | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT a.* FROM asks a
-           JOIN sessions s ON s.session_key = a.session_key
-          WHERE s.thread_id = ? AND a.answer IS NULL AND s.updated_at >= ?
-          ORDER BY a.created_at DESC
-          LIMIT 1`,
-      )
-      .bind(threadId, freshSinceIso)
-      .first<AskRow>();
-    return row ? toAsk(row) : null;
-  }
-
   /** 握っている間の生存の印。**これが止まったセッションは死んだものとして扱う**。 */
   async touchSession(sessionKey: string): Promise<void> {
     await this.db
       .prepare("UPDATE sessions SET updated_at = ? WHERE session_key = ?")
       .bind(nowIso(), sessionKey)
       .run();
+  }
+
+  /** そのセッションが «まだ答えを貰えていない質問»。新しさは見ない (見るのは呼ぶ側)。 */
+  async findOpenAsk(sessionKey: string): Promise<Ask | null> {
+    const row = await this.db
+      .prepare(
+        "SELECT * FROM asks WHERE session_key = ? AND answer IS NULL ORDER BY created_at DESC LIMIT 1",
+      )
+      .bind(sessionKey)
+      .first<AskRow>();
+    return row ? toAsk(row) : null;
   }
 
   async attachAskMessage(askId: string, messageId: string): Promise<void> {
@@ -289,6 +299,57 @@ export class Repo {
       .bind(answer, answeredBy, nowIso(), askId)
       .run();
     return (result.meta?.changes ?? 0) > 0;
+  }
+
+  /* ---- inbox (作業中に書かれた文の置き場) ---- */
+
+  async queueMessage(input: {
+    sessionKey: string;
+    threadId: string;
+    authorId: string;
+    messageId: string | null;
+    body: string;
+  }): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO inbox (session_key, thread_id, author_id, message_id, body, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(input.sessionKey, input.threadId, input.authorId, input.messageId, input.body, nowIso())
+      .run();
+  }
+
+  /**
+   * 溜まっている文をまとめて取り出し、渡した印を付ける。
+   *
+   * **1 つに畳んで返す**。Claude が聞きに来るのは 1 回で、答えられるのも 1 回だから
+   * (「A して」「あと B も」を別々に渡す口が無い)。書いた順に改行で繋ぐ。
+   */
+  async takeQueued(sessionKey: string): Promise<QueuedBatch | null> {
+    const rows = await this.db
+      .prepare(
+        `SELECT id, author_id, message_id, body FROM inbox
+          WHERE session_key = ? AND taken_at IS NULL ORDER BY id`,
+      )
+      .bind(sessionKey)
+      .all<{ id: number; author_id: string; message_id: string | null; body: string }>();
+
+    const results = rows.results ?? [];
+    const first = results[0];
+    if (first === undefined) return null;
+
+    await this.db
+      .prepare("UPDATE inbox SET taken_at = ? WHERE session_key = ? AND taken_at IS NULL")
+      .bind(nowIso(), sessionKey)
+      .run();
+
+    return {
+      text: results.map((row) => row.body).join("\n"),
+      authorId: first.author_id,
+      messageIds: results
+        .map((row) => row.message_id)
+        .filter((id): id is string => id !== null && id !== ""),
+    };
   }
 
   /* ---- events ---- */

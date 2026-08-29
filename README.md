@@ -6,21 +6,27 @@ Cloudflare Workers + D1 だけで動く。手元のマシンも Raspberry Pi も
 指示を投げると Anthropic のクラウド VM で Claude Code のセッションが立ち上がり、判断が要るところで Discord にボタンとフォームで聞きに来る。答えるとその場で続きが走る。
 ターミナルの `AskUserQuestion` と同じ体験を、スマホから受け取れる。
 
-**スレッドは 1 本の会話。** セッションは作業が終わっても終了せず、`ask_human` で
-「次は何をしますか？」と聞いて待つ。そこへ `/claude` で続きを投げると、**同じセッションが
-同じ文脈のまま**続きを始める。「おわり」と言うまで終わらない。待っている間は 1 つの
-ツール呼び出しを SSE で握っているだけなので、**トークンを消費しない**。
+**スレッドは 1 本の会話。** 一度スレッドが立ったら、あとは **素で書くだけ**でいい。
+セッションは作業が終わっても終了せず、`ask_human` で「次は？」と聞いて待つ。そこへ書いた文が
+**同じセッションの同じ文脈へ**そのまま届く。「おわり」と言うまで終わらない。待っている間は
+1 つのツール呼び出しを SSE で握っているだけなので、**トークンを消費しない**。
+
+作業中に書いた文は消えない。👀 が付いて預かられ、Claude が次に聞きに来たときにまとめて渡る
+(ターミナルの Claude Code で作業中に打った文が次のターンで届くのと同じ)。渡ると ✅ に変わる。
 
 ```txt
 /claude "Refactor the auth layer"
         │
         ▼
   Cloudflare Worker ──POST /v1/claude_code/routines/{trig}/fire──▶ Anthropic-managed VM
-        ▲                                                              │
-        │  ❓ A question for you                                       │ .mcp.json
-        │  [ Option A ] [ Option B ] [ ✍️ Write freely ] ◀── ask_human ┘
-        │  … Running / ✅ Done (PR link)  ◀── report ──────────────────┘
-        └── Discord thread
+        ▲     ▲                                                        │
+        │     │  ❓ A question for you                                 │ .mcp.json
+        │     │  [ Option A ] [ Option B ] [ ✍️ Write freely ] ◀── ask_human ┘
+        │     │  … Running / ✅ Done (PR link)  ◀── report ────────────┘
+        │     └── Discord thread
+        │
+        └── Durable Object ══ WebSocket ══ Discord Gateway
+              (a plain message you type in the thread comes in here)
 ```
 
 ## なぜこの形か
@@ -74,8 +80,11 @@ pnpm run deploy                      # https://kanata.<subdomain>.workers.dev �
 1. [Developer Portal](https://discord.com/developers/applications) で New Application → Bot
 2. Bot の **Reset Token** で `DISCORD_BOT_TOKEN`、General Information の **Public Key** で `DISCORD_PUBLIC_KEY`、**Application ID** で `DISCORD_APPLICATION_ID`
 3. **Interactions Endpoint URL** に `https://<worker>/discord/interactions` を入れて保存（保存時に Discord が署名検証を試すので、先に Worker をデプロイしておく）
-4. OAuth2 → URL Generator で招待。スコープ `bot` + `applications.commands`、権限は `Send Messages` / `Create Public Threads` / `Send Messages in Threads` / `View Channels`
-5. コマンドを登録する:
+4. Bot ページの **Privileged Gateway Intents** で **MESSAGE CONTENT INTENT** を on にする。
+   **これが無いと Gateway が close 4014 で切られ、素の文を一切拾えない**（本文が空で届くのではなく、接続そのものが張れない）。
+   ユニークユーザー 10,000 人未満のアプリは Portal のトグルだけでよく、審査も申請も要らない
+5. OAuth2 → URL Generator で招待。スコープ `bot` + `applications.commands`、権限は `Send Messages` / `Create Public Threads` / `Send Messages in Threads` / `View Channels` / `Add Reactions`（最後の 1 つは «預かった / 渡した» の印に使う）
+6. コマンドを登録する:
 
 ```bash
 cat > .env.local <<'ENV'
@@ -141,6 +150,41 @@ git -C /path/to/myapp add .mcp.json .claude && git -C /path/to/myapp commit -m "
 
 Discord で `/claude task:「READMEのtypoを直してPRを作って」`。
 スレッドが立ち、セッションのリンクが出て、Claude が判断に迷うとボタンが飛んでくる。
+
+**そのあとは、スレッドに素で書くだけ。** `/claude` はもう要らない。
+
+## スレッドの中で何が起きるか
+
+素の文の扱いは 4 通りしかない。判定は `src/domain/inbound.ts` が 1 つだけ持っている。
+
+| そのとき Claude は | 書いた文は | 見え方 |
+|---|---|---|
+| 質問を出して待っている | **回答**になる | 質問からボタンが消え、`→ 書いた内容` が付く |
+| 作業中 | **預かられる** | 👀 が付く。渡ったら ✅ に変わる |
+| 終わっている / 落ちている | **新しいセッションの指示**になる | 「🔁 新しいセッションを起こしました」が出る（記憶は引き継がない） |
+| そもそも kanata の会話ではない | **何も起きない** | 何も出さない（雑談がそのまま Claude へ流れる事故を作らない） |
+
+親チャンネルに書いた文は拾わない。**起動は `/claude` だけ**。
+
+### Gateway の様子を見る
+
+素の文は HTTP では受け取れないので、Durable Object が 1 つ Discord Gateway への WebSocket を
+持ち続けている。詰まったらここを見る:
+
+```bash
+curl -H "Authorization: Bearer $KANATA_TOKEN" https://<worker>/gateway/status
+# {"state":"live","healthy":true,"fatalReason":null,"lastReadyAt":...,"connected":true}
+
+curl -X POST -H "Authorization: Bearer $KANATA_TOKEN" https://<worker>/gateway/reset
+```
+
+`state` が `fatal` のときは `fatalReason` に直し方が書いてある（token が違う / intent が
+有効になっていない）。**直らない失敗では自動で張り直さない** — 張り続けると identify の
+レート制限（1 日 1000 回）を静かに使い切るので、設定を直したら `reset` を叩く。
+
+コストは Workers Paid の含有枠の内側に収まる。outbound WebSocket は hibernation 非対応なので
+繋いでいる間ずっと課金されるが、`128MB × 30 日 = 約 324,000 GB-s` で含有 400,000 GB-s を超えない。
+**そのぶん常駐 DO を 2 つにすると枠を超える**ので、この DO はシングルトンにしてある。
 
 ## 待ちのコスト (実測 2026-08-29)
 
@@ -211,9 +255,9 @@ Claude Code は **2 分を超えたツール呼び出しをバックグラウン
 ```
 
 懸念していた «2 分を超えたツール呼び出しがバックグラウンドへ回る» には**当たらなかった**。
-代わりに **75 秒はエッジの限界に近すぎる**ことが分かった (4 回目で 502)。Claude が呼び直して
-復帰はしたが、復帰を運に任せないので **1 回の待ちは 45 秒**に縮めてある。短くしても壊れない —
-待ち続ける責務は Claude 側のループにあり、1 往復増えるだけで人の体感は変わらない。
+代わりに **75 秒はエッジの限界に近すぎる**ことが分かった (4 回目で 502)。エッジが切っているのは
+«最初の 1 バイトが返らない» ためだったので、**SSE で即座にストリームを開いてから握る**形に
+変えてある。それが上の «待ちのコスト» の 15 分 01 秒。この記録は、そこへ至る前の姿。
 
 ## 開発
 
@@ -228,7 +272,6 @@ pnpm run dev           # wrangler dev
 
 ## この先やること（MVP に入れていない）
 
-- **Discord Gateway の常時接続** — スレッドに素で書いた文章を拾う。`knm_kaname` の `apps/server/src/durable-objects/discord-gateway.do.ts` がそのまま使える形になっている (outbound WebSocket は hibernation 非対応 / alarm を使う / 5 分 cron の watchdog)
 - **複数リポジトリ・スケジュール実行・GitHub イベント連携** — routine 側のトリガを足すだけで届く
 - **自己ホスト環境** — runner を Cloudflare Container で動かすと、サブスク課金のまま実行を自分の Cloudflare に引き込める。
   Team/Enterprise の public beta で、Owner が `claude.ai/admin-settings/cloud-environments` で有効化する必要がある

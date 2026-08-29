@@ -47,6 +47,8 @@ cloud session は **サブスク席の枠のまま** なので、こちらを使
 | `domain/prompt.ts` の `ROUTINE_PROMPT` | claude.ai の routine に貼ってある本文 |
 | `domain/prompt.ts` の `buildFireText` | 同上 (payload の 1 行目を session_key として読む前提) |
 | `mcp/server.ts` のツール名 | `ROUTINE_PROMPT` が名指ししている `mcp__kanata__*` |
+| `domain/gateway.ts` の `GATEWAY_INTENTS` | Developer Portal の Privileged Gateway Intents |
+| `wrangler.jsonc` の `durable_objects` / `migrations` | `index.ts` の `export { DiscordGatewayDO }` |
 
 ## 5. 待ちにトークンを使わせない (握り続ける)
 
@@ -73,18 +75,54 @@ ping の間隔がエッジの限界より内側にあることは `server.test.t
 
 ## 5.5 スレッドは 1 本の会話
 
-`/claude` は 1 つのコマンドで 2 つの意味を持つ:
+**スレッドに素で書いた文がそのまま Claude への発言になる。** `/claude` は kanata が知らない
+場所で **起動**するためだけのコマンドで、知っているスレッドの中では素の文と**同じ口**へ入る
+(`discord/inbound.ts` の `applyInbound`)。同じスレッドに同じ文を書いたのに、コマンドか素の文かで
+結果が変わってはいけない。
 
-- そのスレッドに **生きているセッションが待っている質問があれば** → その **回答**として渡す
-- 無ければ → 新しいセッションの **起動**
+判定は `domain/inbound.ts` が 1 つだけ持つ。走っているセッションへ外から発言を差し込む手段は
+無いので、扱いは 4 通りしかない:
+
+| 状況 | 扱い |
+|---|---|
+| 待っている質問がある | **回答**として渡す (握りが即座に解ける) |
+| 作業中 | **溜める** (`inbox`)。次に `ask_human` が呼ばれたとき渡す |
+| 終わっている / 落ちている | 同じスレッドで **新しく起こす** (溜めていた分も一緒に渡す) |
+| kanata の会話ではない | **何もしない**。起動は `/claude` だけ |
 
 **«生きている» の判定を省かない。** 落ちたセッションの未回答の質問が残っていると、以後その
-スレッドの `/claude` を永久に飲み込む «穴» になる (答えを受け取る相手がもう居ない)。握りが
-15 秒ごとに `touchSession` で印を更新し、それが新しいものだけを生きているとみなす。
+スレッドの発言を永久に飲み込む «穴» になる (答えを受け取る相手がもう居ない)。握りが 15 秒ごとに
+`touchSession` で印を更新し、それが新しいものだけを生きているとみなす。
 
-だから routine のプロンプトは «作業が終わったら done で終わる» ではなく **«report(progress) して
-から ask_human で「次は？」と聞いて待つ»** になっている。終わるのは «おわり» と言われたときだけ。
+**印の窓は 2 つある**。握っている間は 15 秒ごとに更新されるが、作業中は誰も触らないので
+数時間開く。同じ窓で見ると «20 分黙って実装している最中の 1 行» で 2 つ目のセッションが立つ。
+外し方の代償が非対称 (溜めすぎ = 届かない・取り返せる / 起こしすぎ = 2 本立つ・取り返せない)
+なので、迷ったら **溜める側**へ倒す。
+
+だから routine のプロンプトは «作業が終わったら done で終わる» ではなく **«ask_human で
+「次は？」と聞いて待つ»** になっている。終わるのは «おわり» と言われたときだけ。
 ここが崩れるとスレッドが 1 回で死ぬ。
+
+### 5.5.1 素の文はどこから来るか
+
+**Discord には素の文 (MESSAGE_CREATE) を HTTP で受け取る手段が無い。** webhook で飛んでくるのは
+Social SDK 由来の一部イベントだけで、チャンネルの発言は今も常時接続の WebSocket でしか来ない。
+だから Durable Object が 1 つ、Gateway への接続を持ち続ける (`gateway/gateway.do.ts`)。
+
+守ること:
+
+- **DO は 1 つだけ** (`idFromName("main")`)。outbound WebSocket は hibernation 非対応で、
+  繋いでいる間ずっと duration 課金になる (月 約 324,000 GB-s = 含有枠 400,000 の内側)。
+  2 つ目の常駐 DO を足すと枠を超える
+- **`setInterval` を使わない。** outbound WebSocket が DO を生かすのは **1 接続あたり最長 15 分**
+  なので、必ずどこかで消える。タイマは alarm、その alarm ごと消えた場合の保険が 5 分 cron の
+  `POST /ensure` (DO は自分では起動できない)
+- **状態遷移は `domain/gateway.ts` の `step` だけが持つ。** ゾンビ接続・op 9 の `d:false`・
+  close 4014 は本番でしか起きないので、入力を手で作れる純粋関数に切ってある
+- **`fetch` に `wss://` を渡さない。** `Fetch API cannot load: wss://…` で即座に落ち、ソケットが
+  開かないので «原因不明で繋がらない» にしか見えない。`gatewayConnectUrl` が `https://` へ直す
+- **直らない失敗 (close 4004 / 4014) は `fatal` にして張り直さない。** 張り続けると identify の
+  レート制限を静かに使い切る。復帰は人が `POST /gateway/reset`
 ## 5.6 Claude の発言は地の文で出す
 
 `ask_human` の問いかけと `report(progress)` は **Claude 本人が喋っている**ので、枠も見出しも
@@ -104,6 +142,7 @@ Worker のコードだけ正しくても動かない。routine と cloud environ
 | cloud environment の Allowed domains | Worker のホスト名 (**スキーム無し**) |
 | cloud environment の環境変数 | `KANATA_URL` / `KANATA_TOKEN` |
 | routine の `allowed_tools` | `mcp__kanata` と 3 つのツール名 (無いと承認待ちで固まる) |
+| Discord Developer Portal | **MESSAGE CONTENT INTENT** (無いと Gateway が close 4014 で切られる) |
 
 どれが欠けても症状は «ask_human が呼ばれない» で同じに見える。切り分けは
 **存在しない `session_key` で `ask_human` を 1 回だけ呼ばせる** のが速い

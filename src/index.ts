@@ -2,17 +2,19 @@ import { Hono } from "hono";
 import { handleInteraction } from "./discord/interactions";
 import { timingSafeEqual, verifyDiscordSignature } from "./discord/verify";
 import type { Env } from "./env";
+import { gatewayStub } from "./gateway/gateway.do";
 import { handleStopHook } from "./hooks/stop";
 import { handleMcp } from "./mcp/server";
 
 /**
- * 入口は 3 つだけで、それぞれ別のゲートを持つ:
+ * 入口とゲートだけ。どれも公開 URL なので、**ゲートを通らない要求はハンドラに渡さない**
+ * (各ハンドラの中で認証をやり直さない)。
  *
  *  - `/discord/interactions` … Discord の Ed25519 署名
- *  - `/mcp` / `/hooks/*`     … cloud session が持つ Bearer (`KANATA_TOKEN`)
+ *  - `/mcp` / `/hooks/*` / `/gateway/*` … cloud session と運用が持つ Bearer (`KANATA_TOKEN`)
  *
- * どれも公開 URL なので、**ゲートを通らない要求はハンドラに渡さない** (各ハンドラの中で
- * 認証をやり直さない)。
+ * 素の文 (MESSAGE_CREATE) はここには来ない。HTTP で受け取る手段が Discord に無いので、
+ * Durable Object が張った WebSocket から入る (`gateway/gateway.do.ts`)。
  */
 
 const app = new Hono<{ Bindings: Env }>();
@@ -60,4 +62,34 @@ app.post("/hooks/stop", async (c) => {
   return handleStopHook(c.req.raw, c.env);
 });
 
-export default app;
+/**
+ * Gateway の様子見と、`fatal` からの復帰。
+ *
+ * `fatal` (close 4004 / 4014 …) は張り直しても同じ結果になるので自動復帰を作っていない。
+ * 設定を直した人がその場で試せる口がここ。無いと «Portal で intent を有効にしたのに
+ * 上がってこない» の原因が誰にも分からない。
+ */
+app.get("/gateway/status", async (c) => {
+  if (!bearerOk(c)) return c.text("unauthorized", 401);
+  return gatewayStub(c.env).fetch("https://gateway/status");
+});
+
+app.post("/gateway/reset", async (c) => {
+  if (!bearerOk(c)) return c.text("unauthorized", 401);
+  return gatewayStub(c.env).fetch("https://gateway/reset", { method: "POST" });
+});
+
+export default {
+  fetch: app.fetch,
+
+  /**
+   * 5 分ごとの watchdog。**DO は自分では起動できない**ので、evict されて alarm ごと
+   * 消えた状態から戻す手段がこれしかない (alarm は DO が生きている間の自力復帰用)。
+   * 既に繋がっていれば `/ensure` は何もしない。
+   */
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(gatewayStub(env).fetch("https://gateway/ensure", { method: "POST" }));
+  },
+} satisfies ExportedHandler<Env>;
+
+export { DiscordGatewayDO } from "./gateway/gateway.do";
