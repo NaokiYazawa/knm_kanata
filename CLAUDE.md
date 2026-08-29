@@ -1,7 +1,7 @@
 # CLAUDE.md — knm_kanata の設計・実装ルール
 
 Discord から **リモートの Claude Code (Claude Code on the web)** を回すための個人用ブリッジ。
-Cloudflare Workers + D1 だけで動く。
+Cloudflare Workers + D1 で動く (実装計画の本文だけ R2)。
 
 ## 1. この作りが «なぜこの形か»
 
@@ -32,7 +32,9 @@ cloud session は **サブスク席の枠のまま** なので、こちらを使
   `waitUntil` に逃がす (`/claude` は routine 起動もスレッド作成も 3 秒に収まらない)
 - **秘密を保存もログ出力もしない**。routine の fire トークンは Worker の secret
   (`PROJECTS_JSON`) だけに置き、D1 に入れない。エラーメッセージにも値を載せない
-- **公開 URL のゲートは fail-closed**。Discord は Ed25519 署名、MCP と hook は Bearer
+- **公開 URL のゲートは fail-closed**。Discord は Ed25519 署名、MCP と hook は Bearer。
+  **«設定されていない» は «誰も通さない»** — 空文字どうしは一致するので、secret を入れ忘れた
+  Worker が全開になる形を作らない (`discord/verify.ts` の `bearerOk` / `domain/owner.ts`)
 - **best-effort で握るなら why を書く**。無言の `catch {}` は書かない
 - **人が読む文言は日本語**。コメント/docstring も日本語で、why を書く
 - **保存は UTC / 見せるのは JST**。時刻は `domain/time.ts` だけが持つ。
@@ -48,11 +50,14 @@ cloud session は **サブスク席の枠のまま** なので、こちらを使
 | `repo-template/.claude/settings.json` の hook 名 | スクリプト内の `hook_event_name` の分岐 |
 | `domain/prompt.ts` の `ROUTINE_PROMPT` | claude.ai の routine に貼ってある本文 |
 | `wrangler.jsonc` の `CONTEXT_WINDOW_TOKENS` | routine の `model` (1M のモデルなら 1000000) |
-| `mcp/server.ts` の «落ちたら呼び直す» 契約 | `ROUTINE_PROMPT` とツール説明が言う復帰手順 |
+| `mcp/server.ts` の «落ちたら呼び直す» 契約 | `SERVER_INSTRUCTIONS` (initialize が毎回名乗る) |
 | `domain/prompt.ts` の `buildFireText` | 同上 (payload の 1 行目を session_key として読む前提) |
 | `mcp/server.ts` のツール名 | `ROUTINE_PROMPT` が名指ししている `mcp__kanata__*` |
 | `domain/gateway.ts` の `GATEWAY_INTENTS` | Developer Portal の Privileged Gateway Intents |
 | `wrangler.jsonc` の `durable_objects` / `migrations` | `index.ts` の `export { DiscordGatewayDO }` |
+| `domain/prompt.ts` の `SERVER_INSTRUCTIONS` が名指しする publish-plan.sh | `repo-template/.claude/scripts/publish-plan.sh` の置き場 |
+| `index.ts` の `/plans/*` `/p/*` のパス | 同じスクリプトが叩く URL |
+| `domain/plans.ts` のパスの規則 | 同じスクリプトが送るファイルの選び方 |
 
 ## 5. 待ちにトークンを使わせない (握り続ける)
 
@@ -62,24 +67,38 @@ cloud session は **サブスク席の枠のまま** なので、こちらを使
 リクエストを出さないので 0 円)。
 
 だから **1 回のツール呼び出しを SSE で握り続ける**。握っている間 API リクエストは 1 本も飛ばず、
-待ち時間のトークン消費は 0 になる。外した壁は 4 つ:
+待ち時間のトークン消費は 0 になる。外した壁は 5 つ:
 
 | 壁 | 実際の仕様 | 外し方 |
 | --- | --- | --- |
 | エッジが 75 秒で 502 | 切っているのは «最初の 1 バイトが返らない» ため | SSE で即座にストリームを開く |
 | MCP の idle timeout | 応答も progress 通知も無い窓が続くと abort | ping と progress 通知を定期送信 |
 | **2 分で背後へ回る** | «task ID を返して Claude は先へ進む» = 待ちが壊れる | `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0` |
+| **無音 5 分で abort** | v2.1.187 以降、応答も progress 通知も無い窓が 5 分続くと切る | `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT` |
 | ツールの wall-clock | per-server `timeout` (未設定なら約 28 時間) | `.mcp.json` の `timeout` |
 
-**3 つ目だけコードの外 (cloud environment の環境変数) にある。** 欠けたときの症状は
-«質問を出した直後に Claude が勝手に先へ進む» で、握りの実装は正しいまま壊れる。
+**3 つ目と 4 つ目はコードの外 (cloud environment の環境変数) にある。** 3 つ目が欠けたときの
+症状は «質問を出した直後に Claude が勝手に先へ進む»、4 つ目が欠けたときは «5 分 00 秒ちょうどで
+握りが落ちる» で、どちらも握りの実装は正しいまま壊れる。
+
+**4 つ目の時計を止められるのは progress 通知だけ**で、SSE のコメント行 (`: ping`) では止まらない
+(JSON-RPC メッセージではないため)。progress 通知は `progressToken` を渡されたときしか送れない
+(仕様) ので、**token が無いときは `SILENT_HOLD_MS` (4 分) で自分から降りて `ask_wait` に
+引き継ぐ**。黙って abort されるより 1 往復多いだけで済む。
 
 ping の間隔がエッジの限界より内側にあることは `server.test.ts` の guard が守る。
 
 ### 5.1 それでも握りは落ちる。落ちても失わせない
 
 壁を全部外しても **transport は落ちる**。実測: 15 分 01 秒・6 分 22 秒は握れたのに、別の回は
-5 分 00 秒で切れた (**時間では説明が付かない = こちらでは防げない**)。
+5 分 00 秒で切れた。
+
+**この «5 分 00 秒» には名前が付いていた** — 上の表の 4 つ目 (`CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT`、
+既定 5 分) である。長らく «時間では説明が付かない» と書いていたが、説明は付く。環境変数を入れ、
+progressToken が無いときは自分から降りるようにしたので、この形の落ち方はもう起きないはず。
+
+それでも **落ちない保証は無い** (エッジの再配置・deploy・回線)。だから以下の «落ちても失わせない»
+は残す。
 
 落ちたとき Claude に届くのは `transport dropped mid-call; response for tool "ask_human" was
 lost` という **`ask_id` を含まない**エラーなので、`ask_wait` では拾い直せない。Claude にできるのは
@@ -101,6 +120,30 @@ lost` という **`ask_id` を含まない**エラーなので、`ask_wait` で�
 依頼者の質問が宙に浮き、Claude は同じ回答を «(直前の接続が切れたため再送します)» と付けて
 **Discord に 2 通目として出した**。依頼者の質問は誰にも届かないまま消えた。
 
+### 5.2 待つ相手が居なくなったら握りをやめる
+
+握りは «人が答えるまで» ではなく **«人が答えうる間»** 続ける。同じスレッドで新しいセッションが
+起こされる (`§5.5` の restart) と、古い方の未回答の問いは誰にも答えられなくなるが、**古い方は
+それを知る手段を持たない**。放っておくと `ask_wait` → 15 分 → `pending` → `ask_wait` を永久に
+繰り返し、15 分ごとに全文脈を積んだリクエストが飛ぶ。**待ちにトークンを使わせない、という
+この節の目的を、いちばん静かに裏切る経路。**
+
+だから `ask_human` の入口と、握っている間の ping ごとに «まだ待つ意味があるか» を見て、
+無ければ `closed` / `superseded` を返して打ち切る (`mcp/server.ts` の `checkAlive`)。
+
+### 5.3 握りを伸ばすときに効くのは壁時計ではなく CPU 時間
+
+Workers に **wall-clock の上限は無い** (公式: 「クライアントが繋がっている限り、
+レスポンス本体を流し続けられる」)。握りが 15 分持つのはそのため。**縛るのは CPU 時間**で、
+Workers Paid の既定は 1 リクエスト 30 秒 (最大 5 分)。3 秒ごとの D1 ポーリングは 15 分ぶんなら
+問題ないが、**`ASK_HOLD_MS` を伸ばすなら `wrangler.jsonc` の `limits.cpu_ms` も上げる**。
+上げずに伸ばすと `Worker exceeded CPU time limit` でストリームごと落ち、症状は
+«原因不明の transport drop» と見分けが付かない。
+
+**この D1 で Read Replication を有効にしない。** 握りは Worker A が読み、回答は別の invocation
+(Discord の interaction) が書く。レプリカ読みが入ると書いた答えが握り側から見えず、
+答えたのに `pending` に落ちる。使うなら Sessions API の bookmark が要る。
+
 ## 5.5 スレッドは 1 本の会話
 
 **スレッドに素で書いた文がそのまま Claude への発言になる。** `/claude` は kanata が知らない
@@ -117,6 +160,18 @@ lost` という **`ask_id` を含まない**エラーなので、`ask_wait` で�
 | 作業中 | **溜める** (`inbox`)。次に `ask_human` が呼ばれたとき渡す |
 | 終わっている / 落ちている | 同じスレッドで **新しく起こす** (溜めていた分も一緒に渡す) |
 | kanata の会話ではない | **何もしない**。起動は `/claude` だけ |
+
+**`queued` のまま止まったセッションを放置しない。** `/claude` の続き (スレッド作成 → routine
+起動) は `waitUntil` の中で走るが、そこは **応答から 30 秒**で切られる。途中で切れると台帳に
+`queued` の行だけが残り、上の表では «作業中» に見えるので、以後そのスレッドの発言は 6 時間ぶん
+全部そこへ吸い込まれて誰も読まない (**書いたのに何も起きない**)。5 分 cron が 10 分以上
+`queued` のものを `failed` に畳む (`session/sweep.ts`)。**勝手に起こし直さない** — 実は起動
+できていた場合に 2 本目が立つ。畳んでおけば、次の 1 行が `restart` として拾う。
+
+**スレッドを作れなかったセッションの `thread_id` は空にする。** チャンネル id を入れると
+`findSessionByThread` が当たるようになり、**そのチャンネルの雑談が丸ごと Claude への入力に
+なる** — 「起動は `/claude` だけ」という約束が、失敗経路でだけ静かに破れる。通知の出し先は
+`target()` がチャンネルへ落とすので失われない。
 
 **«生きている» の判定を省かない。** 落ちたセッションの未回答の質問が残っていると、以後その
 スレッドの発言を永久に飲み込む «穴» になる (答えを受け取る相手がもう居ない)。握りが 15 秒ごとに
@@ -161,6 +216,12 @@ Social SDK 由来の一部イベントだけで、チャンネルの発言は今
 
 同じ理由で **同じ内容を `report` と `ask_human` の 2 回に分けさせない**。routine のプロンプトが
 «やったこと» と «次は？» を 1 回の `ask_human` にまとめるよう指示している。
+
+**答える口は «ボタン» と «スレッドに書く» の 2 つだけ。** «✍️ 書く» → モーダルは持たない —
+選択肢に無いことはスレッドへ直接書けばそのまま回答になる (`§5.5`) ので、同じことを 2 通りで
+言える口を増やす意味が無い。ついでに、モーダルの送信に «元のメッセージを書き換える» で応える
+(type 7) のは Discord の仕様上コンポーネント由来の interaction にしか認められておらず、
+文書化されていない挙動に乗らずに済む。
 
 ## 5.7 コンテキストの残量を見せる
 
@@ -232,6 +293,43 @@ Social SDK 由来の一部イベントだけで、チャンネルの発言は今
 **テストのプロジェクトは 2 つ以上にしておく。** 1 つだと «唯一だから選ばれた» に守られて、
 チャンネルとの結び付けが壊れていても気付けない (`vitest.config.ts` に理由を書いてある)。
 
+## 5.10 実装計画はリポジトリに入れず、URL で配る
+
+**実装計画は使い捨て**で、実装が終われば最終的なコードとズレる。commit すると «嘘が書いて
+ある文書» が正史として残り続けるので、対象リポジトリの `.gitignore` に `plans/` を入れる。
+かといって Discord には出せない — 計画は «相互リンクした複数の markdown» で、実測で
+7 ファイル / 231,647 バイト。1 通 2,000 字では 120 通に割れ、`.md` を添付しても素の
+テキストになって**表が読めない**。
+
+だから Worker が配る (`plans/routes.ts`、手順は [docs/plans.md](./docs/plans.md))。守ること:
+
+- **本文を MCP ツールの引数に載せない。** 載せた瞬間、231KB を Claude が再出力することに
+  なる。置く口はツールではなく素の HTTP で、`publish-plan.sh` が `curl` で送る
+  (`kanata-hook.sh` と同じ流儀)。Claude が読むのは返ってくる URL の 1 行だけ
+- **`§6` の表を増やさない。** これがこの置き場を選んだ理由。`KANATA_URL` / `KANATA_TOKEN` と
+  許可ドメインは既にある。gist なら GitHub のトークン、`wrangler` 直叩きなら Cloudflare の
+  API トークンが増え、欠けたときの症状は例によって «計画が出てこない» で同じに見える
+- **どの計画かは «スレッド × 名前» で決まる** (`domain/plans.ts` の `planScope`)。
+  セッションが落ちて `§5.5` の restart で `session_key` が変わっても、同じスレッドの同じ
+  名前なら同じ URL に上書きされる。ここが `session_key` だと、直すたびに URL が変わって
+  スレッドに貼ったリンクが古い方を指し続ける
+- **`plan_id` は «秘密» ではなく «その 1 文書を開ける鍵»。** URL に載る以上ログにも残る。
+  `§3` が禁じているのは `PROJECTS_JSON` の fire トークン (爆風がアカウントの外へ出る
+  API 資格情報) で、こちらは D1 に平文で置く。ハッシュだけ持つと上書きのたびに URL が
+  変わり、上の «リンクが変わらない» を失う。取り消しは R2 のオブジェクトを消すこと
+- **鍵が URL である以上、URL が外へ出る口を塞ぐ。** `Referrer-Policy: no-referrer` /
+  `X-Robots-Tag: noindex` / `Cache-Control: private, no-store` / `CSP: default-src 'none'`
+- **生 HTML は必ずエスケープする** (`domain/markdown.ts`)。計画には `<URL>` `<string>`
+  `<script>` のような山括弧を含む地の文がある (実測で 40 箇所以上)。素通しにすると
+  ブラウザが飲み込んで **本文がそこだけ消える** — 読み手には «なぜか説明が抜けている» に
+  しか見えない、いちばん質の悪い壊れ方
+- **見出しの id は GitHub と同じ slug**、**相対リンクは書き換えない**。計画は
+  `[§3.1](#31-キーが-confluence-と違う)` と `./phase-01-….md` で自分を指しているので、
+  どちらかを勝手に直すとリンクが死ぬ。slug の «半角 `-` は残すが `—` は消す» は
+  `github-slugger` と突き合わせて決めた (`markdown.test.ts` が値で守る)
+- **本文は D1 ではなく R2。** 1 ファイルが 40KB を超え、D1 の «SQL 文 100KB» と綱渡りに
+  なる。D1 に置くのは台帳 (どのスレッドのどの名前がどの `plan_id` か) だけ
+
 ## 6. routine 側の設定は «コードの外にある前提»
 
 Worker のコードだけ正しくても動かない。routine と cloud environment に次が要る:
@@ -240,8 +338,10 @@ Worker のコードだけ正しくても動かない。routine と cloud environ
 | --- | --- |
 | cloud environment の Allowed domains | Worker のホスト名 (**スキーム無し**) |
 | cloud environment の環境変数 | `KANATA_URL` / `KANATA_TOKEN` |
+| 同上 | `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0` (無いと 2 分で背後へ回る) |
+| 同上 | `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT` (無いと無音 5 分で abort。`ASK_HOLD_MS` より大きく) |
 | routine が向いている環境 | **全プロジェクトで同じものを使う** (環境変数と許可ドメインは環境に付く) |
-| routine の `allowed_tools` | `mcp__kanata` と 3 つのツール名 (無いと承認待ちで固まる) |
+| routine の `allowed_tools` | `mcp__kanata` と 3 つのツール名 + `Bash` (無いと承認待ちで固まる。計画の publish と push に要る) |
 | Discord Developer Portal | **MESSAGE CONTENT INTENT** (無いと Gateway が close 4014 で切られる) |
 | 手元の `projects.json` | 本番の secret `PROJECTS_JSON` (**読み出せないので手元が正本**。`projects:push` で送る) |
 | routine の API トークン | `projects.json` の `fireToken` (**発行し直したら送り直す**。`projects:push` が通るか確かめる) |

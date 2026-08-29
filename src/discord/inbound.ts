@@ -69,7 +69,7 @@ export async function applyInbound(env: Env, input: InboundInput): Promise<Inbou
         await rest.editMessage(
           input.threadId,
           openAsk.messageId,
-          askAnsweredMessage(openAsk, text, input.authorId),
+          askAnsweredMessage(openAsk, text),
         );
       }
       await repo.addEvent(session.sessionKey, "progress", `${openAsk.askId} に回答: ${text}`);
@@ -94,9 +94,9 @@ export async function applyInbound(env: Env, input: InboundInput): Promise<Inbou
   }
 
   // 溜まっていたぶんも一緒に渡す。ここで捨てると «預かったのに何も起きなかった» になる。
-  const pending = await repo.takeQueued(session.sessionKey);
+  // **印を立てるのは起動できてから** (先に立てると、起動に失敗した文がどこにも残らない)。
+  const pending = await repo.peekQueued(session.sessionKey);
   const prompt = pending ? `${pending.text}\n${text}` : text;
-  if (pending) await markDelivered(rest, input.threadId, pending.messageIds);
 
   await rest.postMessage(
     input.threadId,
@@ -107,14 +107,18 @@ export async function applyInbound(env: Env, input: InboundInput): Promise<Inbou
     ),
   );
 
-  const sessionKey = await startInThread(env, {
+  const started = await startInThread(env, {
     threadId: input.threadId,
     channelId: session.channelId,
     project,
     prompt,
     requesterId: input.authorId,
   });
-  return { kind: "restarted", sessionKey };
+  if (pending && started.fired) {
+    await repo.markQueuedTaken(pending.ids);
+    await markDelivered(rest, input.threadId, pending.messageIds);
+  }
+  return { kind: "restarted", sessionKey: started.sessionKey };
 }
 
 async function queue(

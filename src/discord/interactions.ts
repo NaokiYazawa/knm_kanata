@@ -1,5 +1,5 @@
 import { Repo } from "../db/repo";
-import { MODAL_ANSWER_FIELD, parseAskAction } from "../domain/ask";
+import { parseAskAction } from "../domain/ask";
 import { newSessionKey } from "../domain/ids";
 import { isOwner } from "../domain/owner";
 import {
@@ -11,7 +11,7 @@ import {
 } from "../domain/projects";
 import type { Env } from "../env";
 import { fireAndAnnounce } from "../session/launch";
-import { answerModal, askAnsweredMessage, noticeMessage, startedMessage } from "./components";
+import { askAnsweredMessage, noticeMessage, startedMessage } from "./components";
 import { applyInbound } from "./inbound";
 import { DiscordRest, isThreadChannelType } from "./rest";
 
@@ -31,7 +31,6 @@ const EPHEMERAL = 64;
 const TYPE_PING = 1;
 const TYPE_APPLICATION_COMMAND = 2;
 const TYPE_MESSAGE_COMPONENT = 3;
-const TYPE_MODAL_SUBMIT = 5;
 
 const REPLY_PONG = 1;
 const REPLY_MESSAGE = 4;
@@ -53,7 +52,6 @@ type Interaction = {
     name?: string;
     custom_id?: string;
     options?: InteractionOption[];
-    components?: { components?: { custom_id?: string; value?: string }[] }[];
   };
 };
 
@@ -100,9 +98,8 @@ export async function handleInteraction(
   if (interaction.type === TYPE_MESSAGE_COMPONENT) {
     return handleComponent(interaction, env, ctx, userId);
   }
-  if (interaction.type === TYPE_MODAL_SUBMIT) {
-    return handleModalSubmit(interaction, env, ctx, userId);
-  }
+  // モーダルは持たない。選択肢に無い答えは **スレッドに素で書く** のが唯一の口
+  // (`domain/inbound.ts`)。口が 2 つあると «同じことを 2 通りで言える» になる。
   return ephemeral("この操作には対応していません。");
 }
 
@@ -204,7 +201,7 @@ async function startSession(input: {
     }),
   );
 
-  // 会話の置き場を決める。スレッドが作れなければ元のチャンネルへ出す (通知が消えるよりまし)。
+  // 会話の置き場を決める。
   let threadId = input.alreadyInThread ? input.channelId : null;
   if (!threadId && original.ok) {
     const created = await rest.createThreadFromMessage(
@@ -214,7 +211,26 @@ async function startSession(input: {
     );
     if (created.ok) threadId = created.value.id;
   }
-  await repo.attachThread(sessionKey, threadId ?? input.channelId);
+
+  // **スレッドが作れなかったら thread_id は空のままにする。**
+  //
+  // ここでチャンネル id を入れると `findSessionByThread` がそれに当たるようになり、
+  // **そのチャンネルの雑談が丸ごと Claude への入力になる** (「起動は /claude だけ」という
+  // 約束が、失敗経路でだけ静かに破れる)。出す先は `target()` がチャンネルへ落とすので、
+  // 通知は失われない。素の文が拾われなくなることだけを、その場に書いて知らせる。
+  if (threadId) {
+    await repo.attachThread(sessionKey, threadId);
+  } else {
+    await repo.addEvent(sessionKey, "error", "スレッドを作れませんでした");
+    await rest.postMessage(
+      input.channelId,
+      noticeMessage(
+        "⚠️ スレッドを作れませんでした",
+        "このチャンネルで**素の文は拾いません**。続きは `/claude` で送ってください。\n(bot に `Create Public Threads` 権限があるか確かめてください)",
+        true,
+      ),
+    );
+  }
 
   const projects = parseProjects(env.PROJECTS_JSON);
   const project = isProjectsProblem(projects) ? null : findProject(projects, input.project);
@@ -297,9 +313,6 @@ async function handleComponent(
   if (!ask) return ephemeral("この質問は見つかりませんでした。");
   if (ask.answer !== null) return ephemeral(`もう «${ask.answer}» と回答済みです。`);
 
-  if (action.kind === "free") return json(answerModal(ask));
-  if (action.kind !== "pick") return ephemeral("この操作には対応していません。");
-
   const option = ask.options[action.index];
   if (option === undefined) return ephemeral("この選択肢は見つかりませんでした。");
 
@@ -307,33 +320,7 @@ async function handleComponent(
   if (!written) return ephemeral("ほぼ同時に別の回答が入りました。");
 
   ctx.waitUntil(afterAnswer(env, ask.sessionKey, ask.askId, option));
-  return json({ type: REPLY_UPDATE_MESSAGE, data: askAnsweredMessage(ask, option, userId) });
-}
-
-async function handleModalSubmit(
-  interaction: Interaction,
-  env: Env,
-  ctx: Waitable,
-  userId: string,
-): Promise<Response> {
-  const action = parseAskAction(interaction.data?.custom_id ?? "");
-  if (action?.kind !== "modal") return ephemeral("この操作には対応していません。");
-
-  const field = interaction.data?.components
-    ?.flatMap((row) => row.components ?? [])
-    .find((component) => component.custom_id === MODAL_ANSWER_FIELD);
-  const answer = field?.value?.trim() ?? "";
-  if (answer === "") return ephemeral("回答が空でした。");
-
-  const repo = new Repo(env.DB);
-  const ask = await repo.getAsk(action.askId);
-  if (!ask) return ephemeral("この質問は見つかりませんでした。");
-
-  const written = await repo.answerAsk(ask.askId, answer, userId);
-  if (!written) return ephemeral(`もう «${ask.answer}» と回答済みです。`);
-
-  ctx.waitUntil(afterAnswer(env, ask.sessionKey, ask.askId, answer));
-  return json({ type: REPLY_UPDATE_MESSAGE, data: askAnsweredMessage(ask, answer, userId) });
+  return json({ type: REPLY_UPDATE_MESSAGE, data: askAnsweredMessage(ask, option) });
 }
 
 /** 回答が入ったら «待ち» を解いて記録に残す。Claude へは握っている ask_human の返り値として届く。 */

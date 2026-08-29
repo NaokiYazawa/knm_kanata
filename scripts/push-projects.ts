@@ -53,7 +53,10 @@ if (dryRun) {
   process.exit(0);
 }
 
-const passthrough = args.filter((a) => a !== "--dry-run" && a !== "--skip-check");
+// 素の `--` は落とす。`pnpm run x -- --flag` は `--` ごと argv に載るので、そのまま
+// wrangler へ渡すと引数の切れ目が 2 つになる (同じ挙動で `pnpm run deploy -- --profile` が
+// 黙って効かず、別アカウントへ deploy しかけた)。
+const passthrough = args.filter((a) => a !== "--dry-run" && a !== "--skip-check" && a !== "--");
 const child = spawn("wrangler", ["secret", "put", "PROJECTS_JSON", ...passthrough], {
   // 値は stdin で渡す (引数にすると `ps` とシェルの履歴に載る)。
   stdio: ["pipe", "inherit", "inherit"],

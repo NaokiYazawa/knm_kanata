@@ -9,6 +9,7 @@ import {
   gatewayConnectUrl,
   gatewayIsHealthy,
   initialGatewayState,
+  nextAlarmAt,
   parseGatewayPayload,
   pruneReconnects,
   step,
@@ -193,6 +194,44 @@ describe("切断と再開", () => {
     expect(throttleReconnect(1_000, recent.slice(0, 2), now)).toBe(1_000);
     // 窓の外は数えない。
     expect(pruneReconnects([now - 120_000, now - 10], now)).toEqual([now - 10]);
+  });
+});
+
+describe("次の alarm をいつ張るか", () => {
+  const live: GatewayState = {
+    kind: "live",
+    intervalMs: 41_250,
+    awaitingAck: false,
+    ready: true,
+    resume: null,
+  };
+
+  it("live なら heartbeat の予約に合わせる", () => {
+    expect(nextAlarmAt(live, { heartbeatAt: 1_500, connectAt: null }, 1_000, 60_000)).toBe(1_500);
+  });
+
+  it("**張り直した直後 (connecting) は heartbeat の予約を見ない**", () => {
+    // evict されると前の接続の予約が «過去の時刻» のまま storage に残る。それを拾うと
+    // 即座に alarm が鳴り、HELLO が届く前に «connecting のまま = 死んでいる» と判定して
+    // 張ったばかりの接続を自分で殺す。1 周期 (idleMs) 待ってから見に行くのが正しい。
+    const connecting: GatewayState = { kind: "connecting", attempt: 0, resume: null };
+    expect(nextAlarmAt(connecting, { heartbeatAt: 500, connectAt: null }, 1_000, 60_000)).toBe(
+      61_000,
+    );
+  });
+
+  it("張り直しの予約は状態によらず効く (backoff を追い抜かない)", () => {
+    const off: GatewayState = { kind: "disconnected", attempt: 3, resume: null };
+    expect(nextAlarmAt(off, { heartbeatAt: 500, connectAt: 9_000 }, 1_000, 60_000)).toBe(9_000);
+  });
+
+  it("予約が過去でも今より前には張らない", () => {
+    expect(nextAlarmAt(live, { heartbeatAt: 10, connectAt: null }, 5_000, 60_000)).toBe(5_000);
+  });
+
+  it("fatal では張らない (待っても変わらない状態で DO を起こし続けない)", () => {
+    const dead: GatewayState = { kind: "fatal", reason: "token が違います" };
+    expect(nextAlarmAt(dead, { heartbeatAt: 1, connectAt: 1 }, 1_000, 60_000)).toBeNull();
   });
 });
 

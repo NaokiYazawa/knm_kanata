@@ -1,3 +1,4 @@
+import { newPlanId } from "../domain/ids";
 import { nowIso } from "../domain/time";
 
 /**
@@ -30,7 +31,6 @@ export type Ask = Readonly<{
   sessionKey: string;
   question: string;
   options: readonly string[];
-  allowFreeText: boolean;
   answer: string | null;
   answeredBy: string | null;
   answeredAt: string | null;
@@ -40,13 +40,33 @@ export type Ask = Readonly<{
   deliveredAt: string | null;
 }>;
 
-/** 溜まっていた文をまとめて 1 つの «次の指示» に畳んだもの。 */
+/**
+ * 溜まっていた文をまとめて 1 つの «次の指示» に畳んだもの。
+ *
+ * **取り出す (`peekQueued`) と «渡した» 印を立てる (`markQueuedTaken`) は別の操作**。
+ * 先に印を立てると、渡す側が失敗したときに文が宙に浮いて消える (実際にその形をしていた)。
+ * 渡し切ってから印を立てるので、最悪でも «2 回渡る» で済む — 消えるよりずっとよい。
+ */
 export type QueuedBatch = Readonly<{
   text: string;
   /** 最初に書いた人。回答の記録に残す。 */
   authorId: string;
   /** 印 (リアクション) を付け替える相手。`/claude` 経由で溜めたぶんは空。 */
   messageIds: readonly string[];
+  /** 印を立てる対象。**peek した行だけ**を指す (その後に届いた分を巻き込まない)。 */
+  ids: readonly number[];
+}>;
+
+/** 実装計画 1 件。本文は R2 にあり、ここにあるのは «どこに何があるか» だけ。 */
+export type Plan = Readonly<{
+  /** 32hex。**そのまま公開 URL の鍵になる** (`/p/<plan_id>/`)。 */
+  planId: string;
+  /** `thread:<id>` か `session:<key>`。同じ場所の同じ slug は同じ計画。 */
+  scope: string;
+  slug: string;
+  sessionKey: string;
+  createdAt: string;
+  updatedAt: string;
 }>;
 
 type SessionRow = {
@@ -66,12 +86,20 @@ type SessionRow = {
   ctx_at: string | null;
 };
 
+type PlanRow = {
+  plan_id: string;
+  scope: string;
+  slug: string;
+  session_key: string;
+  created_at: string;
+  updated_at: string;
+};
+
 type AskRow = {
   ask_id: string;
   session_key: string;
   question: string;
   options_json: string;
-  allow_free_text: number;
   answer: string | null;
   answered_by: string | null;
   answered_at: string | null;
@@ -99,6 +127,17 @@ function toSession(row: SessionRow): Session {
   };
 }
 
+function toPlan(row: PlanRow): Plan {
+  return {
+    planId: row.plan_id,
+    scope: row.scope,
+    slug: row.slug,
+    sessionKey: row.session_key,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 function toAsk(row: AskRow): Ask {
   // options_json は自分で書いた値しか入らないが、壊れていたら «選択肢なし» に倒す。
   // ここで例外を投げると、答えを待っているセッションが二度と進めなくなる。
@@ -114,7 +153,6 @@ function toAsk(row: AskRow): Ask {
     sessionKey: row.session_key,
     question: row.question,
     options,
-    allowFreeText: row.allow_free_text === 1,
     answer: row.answer,
     answeredBy: row.answered_by,
     answeredAt: row.answered_at,
@@ -167,7 +205,8 @@ export class Repo {
       updatedAt: at,
       contextUsedTokens: null,
       contextOutputTokens: null,
-      contextAt: at,
+      // DB には入れていない (hook が 1 度も来ていない印は NULL)。ここで `at` を返すと嘘になる。
+      contextAt: null,
     };
   }
 
@@ -222,10 +261,29 @@ export class Repo {
       .run();
   }
 
+  /** 台帳を新しい順に見る。本番の経路では使わないが、テストが «何が起きたか» を確かめる口。 */
   async listRecentSessions(limit: number): Promise<Session[]> {
     const result = await this.db
       .prepare("SELECT * FROM sessions ORDER BY created_at DESC LIMIT ?")
       .bind(limit)
+      .all<SessionRow>();
+    return (result.results ?? []).map(toSession);
+  }
+
+  /**
+   * **起動しそこねたまま残っているセッション。**
+   *
+   * `/claude` の続き (スレッド作成 → routine 起動) は `waitUntil` の中で走るが、そこは
+   * **応答から 30 秒**で打ち切られる (Workers の仕様)。途中で切れると `queued` のまま残り、
+   * `domain/inbound.ts` はそれを «起動直後» とみなして以後の発言を延々と溜め込む
+   * (= 書いたのに何も起きない穴になる)。5 分 cron がこれで拾って畳む。
+   */
+  async listStuckQueued(createdBefore: string, limit: number): Promise<Session[]> {
+    const result = await this.db
+      .prepare(
+        "SELECT * FROM sessions WHERE status = 'queued' AND created_at < ? ORDER BY created_at LIMIT ?",
+      )
+      .bind(createdBefore, limit)
       .all<SessionRow>();
     return (result.results ?? []).map(toSession);
   }
@@ -237,30 +295,23 @@ export class Repo {
     sessionKey: string;
     question: string;
     options: readonly string[];
-    allowFreeText: boolean;
   }): Promise<Ask> {
     const at = nowIso();
     await this.db
       .prepare(
+        // `allow_free_text` は «✍️ 書く» ボタンがあった頃の列。ボタンは廃したが
+        // NOT NULL なので 1 を入れ続ける (列を落とす移行を足すほどの実益が無い)。
         `INSERT INTO asks
            (ask_id, session_key, question, options_json, allow_free_text, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, 1, ?)`,
       )
-      .bind(
-        input.askId,
-        input.sessionKey,
-        input.question,
-        JSON.stringify(input.options),
-        input.allowFreeText ? 1 : 0,
-        at,
-      )
+      .bind(input.askId, input.sessionKey, input.question, JSON.stringify(input.options), at)
       .run();
     return {
       askId: input.askId,
       sessionKey: input.sessionKey,
       question: input.question,
       options: input.options,
-      allowFreeText: input.allowFreeText,
       answer: null,
       answeredBy: null,
       answeredAt: null,
@@ -390,12 +441,15 @@ export class Repo {
   }
 
   /**
-   * 溜まっている文をまとめて取り出し、渡した印を付ける。
+   * 溜まっている文をまとめて **読む**。印は立てない。
    *
    * **1 つに畳んで返す**。Claude が聞きに来るのは 1 回で、答えられるのも 1 回だから
    * (「A して」「あと B も」を別々に渡す口が無い)。書いた順に改行で繋ぐ。
+   *
+   * 印を立てるのは渡し切った後 (`markQueuedTaken`)。ここで立ててしまうと、渡す処理が
+   * 失敗したときに文が宙に浮いて **誰にも届かないまま消える**。
    */
-  async takeQueued(sessionKey: string): Promise<QueuedBatch | null> {
+  async peekQueued(sessionKey: string): Promise<QueuedBatch | null> {
     const rows = await this.db
       .prepare(
         `SELECT id, author_id, message_id, body FROM inbox
@@ -408,18 +462,83 @@ export class Repo {
     const first = results[0];
     if (first === undefined) return null;
 
-    await this.db
-      .prepare("UPDATE inbox SET taken_at = ? WHERE session_key = ? AND taken_at IS NULL")
-      .bind(nowIso(), sessionKey)
-      .run();
-
     return {
       text: results.map((row) => row.body).join("\n"),
       authorId: first.author_id,
       messageIds: results
         .map((row) => row.message_id)
         .filter((id): id is string => id !== null && id !== ""),
+      ids: results.map((row) => row.id),
     };
+  }
+
+  /**
+   * 渡し切った文に «渡した» 印を立てる。**peek した行だけ**を名指しする —
+   * 「未処理を全部」にすると、peek と mark の間に届いた文まで飲み込む。
+   */
+  async markQueuedTaken(ids: readonly number[]): Promise<void> {
+    if (ids.length === 0) return;
+    const placeholders = ids.map(() => "?").join(", ");
+    await this.db
+      .prepare(`UPDATE inbox SET taken_at = ? WHERE id IN (${placeholders}) AND taken_at IS NULL`)
+      .bind(nowIso(), ...ids)
+      .run();
+  }
+
+  /* ---- plans ---- */
+
+  /**
+   * 計画の台帳を引くか、無ければ作る。**呼ぶ側は `plan_id` を知らない** —
+   * 知っているのは «どのスレッドの、何という名前か» だけで、id の発行と再利用はここだけの話。
+   *
+   * これが «引くか作る» でないと、同じ計画を直して出し直すたびに URL が変わり、
+   * スレッドに貼ったリンクが古い方を指し続ける。
+   */
+  async upsertPlan(input: { scope: string; slug: string; sessionKey: string }): Promise<Plan> {
+    const at = nowIso();
+    const existing = await this.db
+      .prepare("SELECT * FROM plans WHERE scope = ? AND slug = ?")
+      .bind(input.scope, input.slug)
+      .first<PlanRow>();
+    if (existing) {
+      await this.db
+        .prepare("UPDATE plans SET session_key = ?, updated_at = ? WHERE plan_id = ?")
+        .bind(input.sessionKey, at, existing.plan_id)
+        .run();
+      return { ...toPlan(existing), sessionKey: input.sessionKey, updatedAt: at };
+    }
+    const planId = newPlanId();
+    await this.db
+      .prepare(
+        `INSERT INTO plans (plan_id, scope, slug, session_key, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(planId, input.scope, input.slug, input.sessionKey, at, at)
+      .run();
+    return {
+      planId,
+      scope: input.scope,
+      slug: input.slug,
+      sessionKey: input.sessionKey,
+      createdAt: at,
+      updatedAt: at,
+    };
+  }
+
+  async getPlan(planId: string): Promise<Plan | null> {
+    const row = await this.db
+      .prepare("SELECT * FROM plans WHERE plan_id = ?")
+      .bind(planId)
+      .first<PlanRow>();
+    return row ? toPlan(row) : null;
+  }
+
+  /** 置き終わりの印。読む側が «最終更新» として出す。 */
+  async touchPlan(planId: string): Promise<void> {
+    await this.db
+      .prepare("UPDATE plans SET updated_at = ? WHERE plan_id = ?")
+      .bind(nowIso(), planId)
+      .run();
   }
 
   /* ---- events ---- */

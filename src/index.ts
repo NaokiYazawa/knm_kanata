@@ -1,11 +1,13 @@
 import { Hono } from "hono";
 import { handleInteraction } from "./discord/interactions";
-import { timingSafeEqual, verifyDiscordSignature } from "./discord/verify";
+import { bearerOk as bearerMatches, verifyDiscordSignature } from "./discord/verify";
 import type { Env } from "./env";
 import { gatewayStub } from "./gateway/gateway.do";
 import { handleContextHook } from "./hooks/context";
 import { handleSessionEndHook } from "./hooks/session-end";
 import { handleMcp } from "./mcp/server";
+import { handlePlanFinish, handlePlanUpload, handlePlanView } from "./plans/routes";
+import { sweepStuckSessions } from "./session/sweep";
 
 /**
  * 入口とゲートだけ。どれも公開 URL なので、**ゲートを通らない要求はハンドラに渡さない**
@@ -43,10 +45,7 @@ app.post("/discord/interactions", async (c) => {
 });
 
 function bearerOk(c: { req: { header: (name: string) => string | undefined }; env: Env }): boolean {
-  const header = c.req.header("authorization") ?? "";
-  const prefix = "Bearer ";
-  if (!header.startsWith(prefix)) return false;
-  return timingSafeEqual(header.slice(prefix.length), c.env.KANATA_TOKEN);
+  return bearerMatches(c.req.header("authorization"), c.env.KANATA_TOKEN);
 }
 
 app.post("/mcp", async (c) => {
@@ -70,6 +69,33 @@ app.post("/hooks/context", async (c) => {
 });
 
 /**
+ * 実装計画の置き場。**置くのは Bearer、読むのは URL そのものが鍵**。
+ *
+ * 読む側にゲートを掛けないのは利用者判断 (推測不能な URL で十分)。`plan_id` は 128bit で、
+ * 総当たりは成立しない。URL が漏れる経路は `plans/routes.ts` のヘッダで塞いである。
+ *
+ * 本文は MCP ツールではなく素の HTTP で受ける。**ツールの引数に載せると 200KB 超の計画を
+ * Claude が丸ごと再出力することになる**ため (`plans/routes.ts` の why)。
+ */
+app.put("/plans/:slug/:path{.+}", async (c) => {
+  if (!bearerOk(c)) return c.text("unauthorized", 401);
+  return handlePlanUpload(c.req.raw, c.env, c.req.param("slug"), c.req.param("path"));
+});
+
+app.post("/plans/:slug/finish", async (c) => {
+  if (!bearerOk(c)) return c.text("unauthorized", 401);
+  return handlePlanFinish(c.req.raw, c.env, c.req.param("slug"));
+});
+
+// 末尾の `/` を必ず付ける。**無いと計画の中の相対リンク (`./phase-01.md`) が
+// `/p/phase-01.md` に解決されて全部 404 になる。**
+app.get("/p/:planId{[0-9a-f]{32}}", (c) => c.redirect(`/p/${c.req.param("planId")}/`, 301));
+
+app.get("/p/:planId{[0-9a-f]{32}}/:path{.*}", async (c) =>
+  handlePlanView(c.req.raw, c.env, c.req.param("planId"), c.req.param("path")),
+);
+
+/**
  * Gateway の様子見と、`fatal` からの復帰。
  *
  * `fatal` (close 4004 / 4014 …) は張り直しても同じ結果になるので自動復帰を作っていない。
@@ -90,12 +116,24 @@ export default {
   fetch: app.fetch,
 
   /**
-   * 5 分ごとの watchdog。**DO は自分では起動できない**ので、evict されて alarm ごと
-   * 消えた状態から戻す手段がこれしかない (alarm は DO が生きている間の自力復帰用)。
-   * 既に繋がっていれば `/ensure` は何もしない。
+   * 5 分ごとの watchdog。2 つのことをする。
+   *
+   * 1. Gateway を張り直す。**DO は自分では起動できない**ので、evict されて alarm ごと
+   *    消えた状態から戻す手段がこれしかない (alarm は DO が生きている間の自力復帰用)。
+   *    既に繋がっていれば `/ensure` は何もしない。
+   * 2. **起動しそこねたセッションを畳む** (`session/sweep.ts`)。`waitUntil` は応答から
+   *    30 秒で切られるので、routine の起動が間に合わないと `queued` のまま残り、以後
+   *    そのスレッドの発言を静かに飲み込み続ける。
+   *
+   * 片方が落ちてももう片方は進める (掃除が失敗しても Gateway は張り直したい)。
    */
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(gatewayStub(env).fetch("https://gateway/ensure", { method: "POST" }));
+    ctx.waitUntil(
+      sweepStuckSessions(env).catch((error) => {
+        console.warn("[sweep] failed", error);
+      }),
+    );
   },
 } satisfies ExportedHandler<Env>;
 

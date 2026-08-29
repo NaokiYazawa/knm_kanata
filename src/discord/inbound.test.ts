@@ -69,7 +69,6 @@ describe("素の文の取り込み", () => {
       sessionKey: "KANATA-a1a1a1a1a1a1a1a1",
       question: "次は？",
       options: ["おわり"],
-      allowFreeText: true,
     });
     await repo.attachAskMessage(ask.askId, "msg-ask");
     await repo.setStatus("KANATA-a1a1a1a1a1a1a1a1", "waiting");
@@ -99,7 +98,7 @@ describe("素の文の取り込み", () => {
     expect(await message("th-b", "この後 README も直して")).toEqual({ kind: "queued" });
     // 「受け取りました」を投稿しない — 素の会話が bot の相槌で埋まる。
     expect(seen.some((url) => url.endsWith("/messages"))).toBe(false);
-    expect(await repo.takeQueued("KANATA-b2b2b2b2b2b2b2b2")).toEqual({
+    expect(await repo.peekQueued("KANATA-b2b2b2b2b2b2b2b2")).toMatchObject({
       text: "この後 README も直して",
       authorId: "owner-1",
       messageIds: ["m-1"],
@@ -120,7 +119,7 @@ describe("素の文の取り込み", () => {
     await message("th-c", "あと B も", { messageId: "m-2" });
 
     // Claude が聞きに来られるのは 1 回で、答えられるのも 1 回だから 1 つに畳む。
-    expect((await repo.takeQueued("KANATA-c3c3c3c3c3c3c3c3"))?.text).toBe("まず A\nあと B も");
+    expect((await repo.peekQueued("KANATA-c3c3c3c3c3c3c3c3"))?.text).toBe("まず A\nあと B も");
   });
 
   it("終わったスレッドでは、溜めていた分ごと新しいセッションへ渡す", async () => {

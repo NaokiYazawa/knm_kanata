@@ -25,6 +25,11 @@
     }
   ],
 
+  // 実装計画の本文。**D1 ではなく R2** — 計画は 1 件 200KB 超 / 1 ファイル 40KB 超 (実測) で、
+  // D1 の «SQL 文 100KB» の制限と綱渡りになる。R2 は 10GB まで無料なので実質 0 円。
+  // 台帳 (どのスレッドのどの名前がどの plan_id か) だけが D1 にある。
+  "r2_buckets": [{ "binding": "PLANS", "bucket_name": "kanata-plans-prod" }],
+
   // 素の文 (MESSAGE_CREATE) は WebSocket でしか来ないので、接続を持ち続ける DO を 1 つ置く。
   // outbound WebSocket は hibernation 非対応 = 繋いでいる間ずっと duration 課金なので、
   // **常時 1 つだけ**という前提でコストが成り立っている (月 約 324,000 / 含有 400,000 GB-s)。

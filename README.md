@@ -3,16 +3,15 @@
 Discord から、リモートで走る Claude Code に指示を出すための個人用ブリッジ。
 Cloudflare Workers + D1 だけで動く。手元のマシンも Raspberry Pi も要らない。
 
-指示を投げると Anthropic のクラウド VM で Claude Code のセッションが立ち上がり、判断が要るところで Discord にボタンとフォームで聞きに来る。答えるとその場で続きが走る。
+指示を投げると Anthropic のクラウド VM で Claude Code のセッションが立ち上がり、判断が要るところで Discord にボタンで聞きに来る。ボタンを押すか、スレッドにそのまま書けば、その場で続きが走る。
 ターミナルの `AskUserQuestion` と同じ体験を、スマホから受け取れる。
 
 **スレッドは 1 本の会話。** 一度スレッドが立ったら、あとは **素で書くだけ**でいい。
-セッションは作業が終わっても終了せず、`ask_human` で「次は？」と聞いて待つ。そこへ書いた文が
-**同じセッションの同じ文脈へ**そのまま届く。「おわり」と言うまで終わらない。待っている間は
-1 つのツール呼び出しを SSE で握っているだけなので、**トークンを消費しない**。
+セッションは作業が終わっても終了せず、`ask_human` で「次は？」と聞いて待つ。そこへ書いた文が同じセッションの同じ文脈へそのまま届く。
+「おわり」と言うまで終わらない。待っている間は 1 つのツール呼び出しを SSE で握っているだけなので、**トークンを消費しない**。
 
-作業中に書いた文は消えない。👀 が付いて預かられ、Claude が次に聞きに来たときにまとめて渡る
-(ターミナルの Claude Code で作業中に打った文が次のターンで届くのと同じ)。渡ると ✅ に変わる。
+作業中に書いた文は消えない。👀 が付いて預かられ、Claude が次に聞きに来たときにまとめて渡る (ターミナルの Claude Code で作業中に打った文が次のターンで届くのと同じ)。
+渡ると ✅ に変わる。
 
 ```txt
 /claude "Refactor the auth layer"
@@ -21,7 +20,7 @@ Cloudflare Workers + D1 だけで動く。手元のマシンも Raspberry Pi も
   Cloudflare Worker ──POST /v1/claude_code/routines/{trig}/fire──▶ Anthropic-managed VM
         ▲     ▲                                                        │
         │     │  ❓ A question for you                                 │ .mcp.json
-        │     │  [ Option A ] [ Option B ] [ ✍️ Write freely ] ◀── ask_human ┘
+        │     │  [ Option A ] [ Option B ]  ← or just type in the thread ── ask_human ┘
         │     │  … Running / ✅ Done (PR link)  ◀── report ────────────┘
         │     └── Discord thread
         │
@@ -58,6 +57,7 @@ Cloudflare 側は Workers Paid の $5/月 に収まる (D1・Worker とも個人
 pnpm install
 wrangler d1 create kanata          # 出力の database_id を wrangler.jsonc に貼る
 pnpm run db:migrate                # 本番の D1 にスキーマを流す
+wrangler r2 bucket create kanata-plans-prod   # 実装計画の置き場 (docs/plans.md)
 ```
 
 secret を入れる (`PROJECTS_JSON` は 3 で作った routine が要るので後回しでよい):
@@ -74,6 +74,19 @@ wrangler secret put PROJECTS_JSON
 ```bash
 pnpm run deploy                      # https://kanata.<subdomain>.workers.dev が出る
 ```
+
+**Cloudflare のアカウントを複数持っているなら、プロファイルを package.json に固定する。**
+`deploy` / `db:migrate` / `projects:push` の 3 つに `--profile` を書いてあります（既定は `linto`）。
+別のアカウントで動かすなら、この 3 か所を書き換えてください。
+
+固定していないと `pnpm run deploy` は **`wrangler whoami` が出す既定アカウント**へ向かいます。
+D1 が無ければ `D1 binding 'DB' references database '…' which was not found` で落ちますが、
+**secret を送る `projects:push` の方は落ちずに通ってしまい、routine の fire トークンが意図
+しないアカウントの Worker に入ります**（実際に入りました）。
+
+コマンドラインから付け足すときは `pnpm exec` を使ってください。
+`pnpm run deploy -- --profile x` は `--` が wrangler へそのまま渡るので**効きません**
+（`wrangler deploy -- --profile x` になり、プロファイルは無視されます）。
 
 ### 2. Discord
 
@@ -125,6 +138,10 @@ routine の編集画面 → 環境の設定で:
   - `KANATA_TOKEN` = 1 で決めた値
   - `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` = `0`
     （**必須**。無いと `ask_human` が 2 分でバックグラウンドに回され、Claude が答えを待たずに先へ進む）
+  - `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT` = `3600000`
+    （**必須**。Claude Code は v2.1.187 以降、応答も progress 通知も無いまま **5 分**経った
+    リモート MCP ツール呼び出しを打ち切る。既定 5 分・公式ドキュメント未記載で、
+    症状は「**5 分 00 秒ちょうどで握りが落ちる**」。`ASK_HOLD_MS`（既定 15 分）より大きくする）
 
 ### 5. 対象リポジトリに置くもの
 
@@ -135,6 +152,11 @@ routine の編集画面 → 環境の設定で:
 | `.mcp.json` | Worker を MCP サーバーとして繋ぐ。cloud session は **project スコープの `.mcp.json` を確認プロンプト無しで読み込む** |
 | `.claude/settings.json` | hook の登録（`PreToolUse` / `Stop` / `SessionEnd`） |
 | `.claude/hooks/kanata-hook.sh` | コンテキスト残量の通報と、完了通知の**保険** |
+| `.claude/scripts/publish-plan.sh` | 実装計画を Worker へ置いて、読む URL を返す（[docs/plans.md](./docs/plans.md)） |
+
+実装計画を使うなら、対象リポジトリの `.gitignore` に **`/plans/`** も足しておく
+（先頭の `/` を落とすと `src/plans/` のような同名のディレクトリまで巻き込む）
+（使い捨ての計画が commit に混ざると、実装とズレた文書が正史として残る）。
 
 ```bash
 cp -r /path/to/knm_kanata/repo-template/. /path/to/myapp/
@@ -153,7 +175,7 @@ Discord で `/claude task:「READMEのtypoを直してPRを作って」`。
 素の文の扱いは 4 通りしかない。判定は `src/domain/inbound.ts` が 1 つだけ持っている。
 
 | そのとき Claude は | 書いた文は | 見え方 |
-|---|---|---|
+| --- | --- | --- |
 | 質問を出して待っている | **回答**になる | 質問からボタンが消え、`→ 書いた内容` が付く |
 | 作業中 | **預かられる** | 👀 が付く。渡ったら ✅ に変わる |
 | 終わっている / 落ちている | **新しいセッションの指示**になる | 「🔁 新しいセッションを起こしました」が出る（記憶は引き継がない） |
@@ -185,7 +207,7 @@ curl -X POST -H "Authorization: Bearer $KANATA_TOKEN" https://<worker>/gateway/r
 
 16.6 分待たせたときの実際の記録:
 
-```
+```txt
 04:26:01  ask_human  ──────── 15 分 01 秒 握り続けた ────────▶ 04:41:03  pending
 04:41:05  ask_wait   ──── 1 分 37 秒 ────▶ 04:42:42  answered「合言葉は？」
 04:42:44  「合言葉は『紫陽花』です」        ← 17 分前に伝えた言葉を保持
@@ -199,7 +221,7 @@ curl -X POST -H "Authorization: Bearer $KANATA_TOKEN" https://<worker>/gateway/r
 
 **リポジトリはモノレポ 1 本**を前提にしています。そうすると全部が一直線に並びます。
 
-```
+```txt
 Discord チャンネル  ──  プロジェクト  ──  routine  ──  GitHub リポジトリ
    #alpha                 alpha          trig_…        NaokiYazawa/alpha
 ```
@@ -246,7 +268,7 @@ Discord チャンネル  ──  プロジェクト  ──  routine  ──  Gi
 ### セッションが触れる範囲は `sources` が境界（実測）
 
 | 試したこと | 結果 |
-|---|---|
+| --- | --- |
 | `credential.helper` | **未設定** |
 | 公開リポジトリを `git clone` | OK |
 | **非公開リポジトリを `git ls-remote`** | **NG** |
@@ -260,7 +282,7 @@ Discord チャンネル  ──  プロジェクト  ──  routine  ──  Gi
 
 リポジトリを 2 本以上入れると **作業ディレクトリがリポジトリの外へ上がります**（実測）。
 
-```
+```txt
 1 本 … cwd = /home/user/knm_kanata   → リポジトリの .mcp.json が読まれる
 2 本 … cwd = /home/user              → 読まれない（mcp__kanata__* が消える）
 ```
@@ -275,7 +297,7 @@ Discord チャンネル  ──  プロジェクト  ──  routine  ──  Gi
 **中身はどのプロジェクトでも同じ**なので、環境に 1 回貼れば以後は routine にリポジトリを
 並べるだけです。貼った後の実測:
 
-```
+```txt
 Running setup script → Setup script completed
 /home/user/.mcp.json                     あり
 /home/user/.claude/settings.json         あり  hooks: PreToolUse / Stop / SessionEnd
@@ -286,7 +308,7 @@ mcp__kanata__ask_human / ask_wait / report   見えている   ← 復活
 ### routine の上限
 
 | | |
-|---|---|
+| --- | --- |
 | routine の**数** | 文書化された上限なし |
 | 1 日に**走らせられる回数** | アカウント単位の日次キャップ（正本は [claude.ai/code/routines](https://claude.ai/code/routines)） |
 | API トークン | **routine ごとに web UI で手で発行**（*"There is no public API for token management."*） |
@@ -298,7 +320,7 @@ mcp__kanata__ask_human / ask_wait / report   見えている   ← 復活
 
 **リポジトリに commit したスキルは、クラウドセッションでそのまま使えます。**
 
-```
+```txt
 .claude/skills/<name>/SKILL.md   → commit して push するだけ
 ```
 
@@ -310,14 +332,14 @@ mcp__kanata__ask_human / ask_wait / report   見えている   ← 復活
 ### 複数のリポジトリで共通に使いたいとき
 
 | 方法 | 効き方 | 注意 |
-|---|---|---|
+| --- | --- | --- |
 | **claude.ai のアカウントで有効化** | 全リポジトリ・全 routine に自動で届く | Anthropic 経由なので**許可ドメイン不要**。リポジトリ側の設定も不要 |
 | リポジトリの `.claude/settings.json` でプラグイン宣言 | マーケットプレイス 1 本を各リポジトリから参照。git で版管理できる | セッション開始時にインストールするので、**マーケットプレイスのホストを Allowed domains に足す**必要がある |
 
 **効かないもの**（同じ表より）:
 
 | `~/.claude/skills/`（手元のマシン） | **No** — *"Live on your machine, not in the repo"* |
-|---|---|
+| --- | --- |
 | ユーザー設定だけで有効化したプラグイン | **No** — リポジトリの `.claude/settings.json` で宣言するか、claude.ai で有効にする |
 
 **同名のときの優先順位に注意。** リポジトリのスキルは claude.ai 同期スキルを**上書き**します
@@ -330,7 +352,7 @@ account with the same name"*）。一方 `~/.claude/skills/` はローカルで�
 疎通確認用に `.claude/skills/kanata-selftest/` を置いてあります。実際にクラウドセッションで
 走らせた結果:
 
-```
+```txt
 --- プロジェクト (このリポジトリ) ---
 kanata-selftest                        ← commit したスキルが読まれている
 --- 個人 (~/.claude/skills) ---
@@ -353,15 +375,41 @@ synced                                 ← synced plugins も届いている
 なお **「Claude が説明文を見て自分で選ぶ」経路はまだ実測していません**（この確認では名指し
 しました）。仕様上は `description` で自動選択されます。
 
+## 実装計画は GitHub に入れず、URL で読む
+
+実装計画は使い捨てで、実装が終われば最終的なコードとズレる。commit すると **嘘が書いてある
+文書が正史として残り続ける**ので、リポジトリには入れない。かといって Discord にも出せない —
+計画は «相互リンクした複数の markdown» で、実測で 7 ファイル / 231,647 バイトある。1 通
+2,000 字のメッセージでは 120 通に割れ、`.md` を添付しても素のテキストになって**表が読めない**。
+
+そこで Worker が配る。
+
+```sh
+.claude/scripts/publish-plan.sh KANATA-0123456789abcdef plans/github-link
+# → https://kanata.linto-dev.workers.dev/p/5aa03867a14bae849ed671d4c5fb1ba5/
+```
+
+出た URL を `ask_human` に貼る。依頼者はスマホからそれを開いて読み、スレッドに「ここを直して」
+と書く。**同じ名前で出し直しても URL は変わらない**ので、貼り直しは要らない。
+
+- 置き場は R2 (10GB まで無料)、台帳は D1。**環境に足す設定は 1 つも無い** —
+  `KANATA_URL` / `KANATA_TOKEN` と許可ドメインは既にあるものをそのまま使う
+- 本文は **MCP ツールではなく `curl`** で送る。ツールの引数に載せると 231KB を Claude が
+  再出力することになるため。Claude が読むのは URL の 1 行だけ
+- `/p/<32hex>/` の 32hex がそのまま鍵。ログインは挟まないので、**URL が外へ出ていく口**を
+  ヘッダで塞いである (`Referrer-Policy: no-referrer` ほか)
+
+詳しくは [docs/plans.md](./docs/plans.md)。
+
 ## コンテキストの残量
 
 Claude の発言の末尾に、そのときの使用量が小さく付きます。
 
-```
+```txt
 kanata
 実装が終わりました。次は？
 ▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░ 62% ・124k/200k
-  [ おわり ]  [ ✍️ 書く ]
+  [ おわり ]        ← 「おわり」以外を言いたければ、そのままスレッドに書く
 ```
 
 **次に何を言うか決めるまさにその場**にあるので、見に行く必要がありません。過去のメッセージは
@@ -393,7 +441,7 @@ wrangler secret put CONTEXT_WINDOW_TOKENS   # 1000000
 ### 出す場所を «発言の末尾» にした理由
 
 | 候補 | なぜ使わないか |
-|---|---|
+| --- | --- |
 | スレッド名 | Discord の**チャンネル名変更は 2 回 / 10 分**で、毎ターン更新できない |
 | スレッド先頭の起動メッセージ | 更新はできるが、**見るのに上までスクロールが要る** |
 | 別メッセージで通知 | 会話が bot の相槌で埋まる |
@@ -407,7 +455,7 @@ wrangler secret put CONTEXT_WINDOW_TOKENS   # 1000000
 エラーで、`ask_wait` では拾い直せない。だから `ask_human` を **セッション単位で冪等**にしてある:
 
 | 呼び直したとき | 返るもの |
-|---|---|
+| --- | --- |
 | 切れている間に答えが入っていた | **その答え**（質問は出し直さない） |
 | まだ未回答 | 同じ問いを握り直す（**Discord に 2 通目を出さない**） |
 | 未配達の問いが無い | ふつうに新しい問いを立てる |
@@ -419,7 +467,7 @@ routine のプロンプトにも「接続エラーで落ちたら `question` は
 
 **① 許可ドメインに入れていないと、MCP の接続失敗が «認証エラー» に化ける。**
 
-```
+```txt
 kanata (AUTH_HEADER_REJECTED): "Server rejected the configured Authorization header (HTTP 403).
 … Error detail: request blocked: no rule or allowlist entry allows host kanata.linto-dev.workers.dev"
 ```
@@ -451,17 +499,17 @@ Claude Code は **2 分を超えたツール呼び出しをバックグラウン
 `/claude` から PR 手前まで実機で通した。記録は D1 と routine のログに残っている。
 
 | 経路 | 結果 |
-|---|---|
+| --- | --- |
 | Discord `/claude` → スレッド作成 → routine 起動 | ✅ |
 | cloud session → MCP `report` → Discord のスレッド | ✅ |
 | `ask_human` の選択肢ボタン | ✅ |
-| `ask_human` の自由記述 (モーダル) | ✅ |
+| 選択肢に無い答えを **スレッドに素で書く** | ✅ |
 | **`ask_wait` の呼び直しループ (5 分待ち)** | ✅ |
 | Stop hook が転写ログの印から実行を特定 | ✅ (`report(done)` が先に来ていれば二重に出さない) |
 
 **待ちの実測 (5 分 19 秒 待たせたとき):**
 
-```
+```txt
 03:11:37  ask_human  → 03:12:53  pending   (76 秒)
 03:12:54  ask_wait   → 03:14:09  pending   (75 秒)
 03:14:10  ask_wait   → 03:15:18  ERROR 502 Bad gateway (origin_bad_gateway)

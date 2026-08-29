@@ -13,6 +13,53 @@ export function buildFireText(sessionKey: string, prompt: string): string {
 }
 
 /**
+ * MCP の `initialize` で返す `instructions`。**クライアントがシステムプロンプトへ差し込む**
+ * (Claude Code は「MCP Server Instructions」として実際に読み込む)。
+ *
+ * ここに置くのは «kanata というサーバーの使い方»、つまり **握りが落ちたときの復帰手順**。
+ * これまで `ROUTINE_PROMPT` にしか書いておらず、claude.ai 側に貼った本文とサーバーの契約が
+ * ズレると **静かに壊れる** (`CLAUDE.md §4` の «対で維持するもの») のが弱点だった。
+ * サーバー自身が毎回名乗れば、貼り忘れでは壊れなくなる。
+ *
+ * `ROUTINE_PROMPT` の同じ記述は当面残す (routine を貼り直さなくても動くように)。重複しても
+ * 矛盾はしないので害は無い。次に routine を貼り直すとき、向こうの «待ちの中断» の節は消せる。
+ */
+export const SERVER_INSTRUCTIONS = `kanata は Discord にいる依頼者との唯一の口です。
+
+- \`session_key\` は指示の 1 行目にある \`KANATA-\` で始まる値をそのまま渡します。
+- 判断が要ること (仕様の解釈・方針の選択・破壊的な操作の可否) は勝手に決めず、
+  \`ask_human\` を呼んで待ってください。答えが返るまでこの呼び出しは戻りません。
+  **待っている間トークンは消費しません。待つことを惜しまないでください。**
+- 選択肢があれば \`options\` に入れます (最大 20 個)。選択肢に無いことは依頼者が
+  スレッドへ直接書いて答えるので、「自由記述の口」を別に用意する必要はありません。
+- 同じ内容を \`report\` と \`ask_human\` に分けて 2 回言わないでください。2 通届きます。
+
+待ちが中断される形は 3 つあり、**最初の 2 つは失敗ではありません**:
+
+- \`status: "pending"\` … 握りの上限に達しただけ。同じ \`ask_id\` で \`ask_wait\` を呼び直す
+- **接続エラーで落ちた** (\`transport dropped\` など。\`ask_id\` が手元に無い) … 同じ
+  \`session_key\` で \`ask_human\` を呼び直す。**\`question\` は \`"(再送)"\` の 1 語でよい** —
+  サーバーが直前の問いを覚えていて、出したままの問いを握り直すか、切れている間に届いた
+  答えを返します。Discord に同じ質問が 2 回出ることはありません
+- \`status: "closed"\` / \`"superseded"\` … そのセッションはもう誰も見ていません。
+  **kanata のツールをこれ以上呼ばず、作業を終えてください。** 返しても誰にも届きません
+
+## 長い文書は Discord に貼らない
+
+実装計画のような長い markdown は Discord に入りません (1 通 2,000 字)。リポジトリに
+\`.claude/scripts/publish-plan.sh\` があれば、\`plans/<名前>/\` に書いてから
+
+    .claude/scripts/publish-plan.sh <session_key> plans/<名前>
+
+を実行し、**返ってきた URL の 1 行だけ**を \`ask_human\` の \`question\` に貼ってください。
+
+- **本文をツールの引数に載せないでください。** 計画は 200KB を超えます (そのまま再出力する
+  ことになります)。スクリプトは中身をそのまま送るので、あなたが書き写す必要はありません
+- 同じ名前で出し直すと **同じ URL に上書き**されます。リンクを貼り直す必要はありません
+- \`plans/\` は commit されません。原文が要るときは URL に \`?raw=1\` を付けて取り直せます
+`;
+
+/**
  * claude.ai の routine に保存するプロンプトの雛形。`scripts/print-routine-prompt.ts` が出す。
  * ここを直したら routine 側も貼り直すこと (ズレても静かに動き続け、ask_human が呼ばれなくなる)。
  *

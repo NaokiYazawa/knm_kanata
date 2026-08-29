@@ -44,7 +44,27 @@ export async function verifyDiscordSignature(input: {
 }
 
 /**
- * MCP・hook の Bearer 照合。長さの差で早期に false を返さないよう、固定長へ均してから比べる。
+ * MCP・hook・運用の Bearer ゲート。**設定が空なら誰も通さない。**
+ *
+ * 空文字どうしは «一致» になるので、`KANATA_TOKEN` を入れ忘れた Worker では
+ * `Authorization: Bearer ` (値なし) がそのまま通る。公開 URL のゲートで、**設定漏れが
+ * 全開になる**形を残さない (`domain/owner.ts` が同じ理由で同じ形をしている)。
+ *
+ * 前後の空白は落としてから比べる。`echo "…" | wrangler secret put` で末尾に改行が入り、
+ * «値は合っているのに弾かれる» が無言で起きるため。
+ */
+export function bearerOk(header: string | undefined, configured: string | undefined): boolean {
+  const expected = (configured ?? "").trim();
+  // 設定されていない = 誰も通さない。ここは秘密ではなく設定の状態なので、早期に返してよい。
+  if (expected === "") return false;
+
+  const prefix = "Bearer ";
+  if (header === undefined || !header.startsWith(prefix)) return false;
+  return timingSafeEqual(header.slice(prefix.length).trim(), expected);
+}
+
+/**
+ * 値どうしの照合。長さの差で早期に false を返さないよう、固定長へ均してから比べる。
  */
 export function timingSafeEqual(a: string, b: string): boolean {
   const encoder = new TextEncoder();

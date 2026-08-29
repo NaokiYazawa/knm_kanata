@@ -58,6 +58,9 @@ export async function fireAndAnnounce(
 /**
  * 既にあるスレッドの中で新しく起こす。前の会話の記憶は引き継がない (別のセッションなので)。
  * その事実は呼び出し側がスレッドへ 1 行出す — ここは «起こす» だけを担う。
+ *
+ * **起動できたかを返す。** 呼び出し側は «預かっていた文を渡し終えた» 印をこれで決める
+ * (起動に失敗したのに印を立てると、その文は誰にも届かないまま消える)。
  */
 export async function startInThread(
   env: Env,
@@ -68,7 +71,7 @@ export async function startInThread(
     prompt: string;
     requesterId: string;
   },
-): Promise<string> {
+): Promise<{ sessionKey: string; fired: boolean }> {
   const repo = new Repo(env.DB);
   const sessionKey = newSessionKey();
   await repo.createSession({
@@ -79,11 +82,11 @@ export async function startInThread(
     channelId: input.channelId,
   });
   await repo.attachThread(sessionKey, input.threadId);
-  await fireAndAnnounce(env, {
+  const fired = await fireAndAnnounce(env, {
     sessionKey,
     project: input.project,
     prompt: input.prompt,
     target: input.threadId,
   });
-  return sessionKey;
+  return { sessionKey, fired };
 }

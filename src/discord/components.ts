@@ -1,5 +1,5 @@
 import type { Ask } from "../db/repo";
-import { freeCustomId, MODAL_ANSWER_FIELD, modalCustomId, pickCustomId } from "../domain/ask";
+import { pickCustomId } from "../domain/ask";
 import type { MessagePayload } from "./rest";
 
 /**
@@ -46,6 +46,9 @@ function withContext(content: string, contextLine: string | null): string {
  * Claude の問いかけ。**見出しも枠も付けない** — ターミナルの Claude Code がそうであるように、
  * ただ本人が喋っているように見せる。押せる口があることはボタンが示すので、
  * 「確認したいことがあります」と宣言する必要は無い。
+ *
+ * 選択肢が無ければボタンも出さない。**その場合の答え方は «スレッドに書く»** で、
+ * 選択肢があるときも同じように書けば «選択肢に無い答え» を返せる (`domain/inbound.ts`)。
  */
 export function askMessage(ask: Ask, contextLine: string | null = null): MessagePayload {
   const buttons: unknown[] = ask.options.map((option, index) => ({
@@ -54,14 +57,6 @@ export function askMessage(ask: Ask, contextLine: string | null = null): Message
     label: option,
     custom_id: pickCustomId(ask.askId, index),
   }));
-  if (ask.allowFreeText) {
-    buttons.push({
-      type: 2,
-      style: 1,
-      label: "✍️ 書く",
-      custom_id: freeCustomId(ask.askId),
-    });
-  }
 
   return {
     content: withContext(ask.question, contextLine),
@@ -72,42 +67,15 @@ export function askMessage(ask: Ask, contextLine: string | null = null): Message
 
 /**
  * 回答後の姿。ボタンだけを消し、選んだものを小さく添える (押せる口が残ると二度押しを誘う)。
- * 自由記述での回答は本人の発言として別に見えているので、ここでは控えめに出す。
+ * スレッドに書いて答えたときは本人の発言が別に見えているので、ここでは控えめに出す。
  */
-export function askAnsweredMessage(ask: Ask, answer: string, _answeredBy: string): MessagePayload {
+export function askAnsweredMessage(ask: Ask, answer: string): MessagePayload {
   const head = ask.question.slice(0, 1700);
   const tail = `\n-# → ${answer.replace(/\s+/g, " ")}`;
   return {
     content: (head + tail).slice(0, MAX_CONTENT),
     components: [],
     allowed_mentions: { parse: [] },
-  };
-}
-
-export function answerModal(ask: Ask): unknown {
-  return {
-    type: 9,
-    data: {
-      custom_id: modalCustomId(ask.askId),
-      title: "回答を書く",
-      components: [
-        {
-          type: 1,
-          components: [
-            {
-              type: 4,
-              custom_id: MODAL_ANSWER_FIELD,
-              style: 2,
-              label: "回答",
-              // 質問文をそのまま placeholder に置くと 100 字上限で切れるので短く畳む。
-              placeholder: ask.question.slice(0, 100),
-              required: true,
-              max_length: 4000,
-            },
-          ],
-        },
-      ],
-    },
   };
 }
 
