@@ -1,5 +1,3 @@
-import { SESSION_KEY_PREFIX } from "./ids";
-
 /**
  * routine へ渡す fire ペイロードの組み立て。
  *
@@ -17,6 +15,9 @@ export function buildFireText(sessionKey: string, prompt: string): string {
 /**
  * claude.ai の routine に保存するプロンプトの雛形。`scripts/print-routine-prompt.ts` が出す。
  * ここを直したら routine 側も貼り直すこと (ズレても静かに動き続け、ask_human が呼ばれなくなる)。
+ *
+ * `ids.ts` を import していないのは、`scripts/print-routine-prompt.ts` を素の node で走らせるため
+ * (拡張子なしの相対 import を node は解決できない)。印がズレないことは `prompt.test.ts` が見る。
  */
 export const ROUTINE_PROMPT = `あなたは routine から起動された Claude Code のクラウドセッションです。
 
@@ -24,7 +25,7 @@ export const ROUTINE_PROMPT = `あなたは routine から起動された Claude
 \`<routine-fire-payload>\` ブロックの中に、依頼者本人が書いた指示が入っています。
 そこに書かれた指示を、この実行の課題として実行してください。
 
-payload の 1 行目は \`${SESSION_KEY_PREFIX}\` で始まるセッションキーです。
+payload の 1 行目は \`KANATA-\` で始まるセッションキーです。
 以降、kanata のツールを呼ぶときは **必ずこの値をそのまま \`session_key\` に渡してください**。
 
 ## 人に聞くとき (重要)
