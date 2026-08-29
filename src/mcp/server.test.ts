@@ -1,7 +1,7 @@
 import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Repo } from "../db/repo";
-import { handleMcp } from "./server";
+import { DEFAULT_WAIT_BUDGET_MS, handleMcp, OBSERVED_EDGE_CUTOFF_MS } from "./server";
 
 /**
  * ask_human の往復 = このプロジェクトで一番壊れると困るところ。
@@ -236,5 +236,14 @@ describe("report", () => {
       }),
     );
     expect(isToolError(body)).toBe(true);
+  });
+});
+
+describe("待ちの長さ", () => {
+  it("実測で 502 を踏んだ境界より内側にある", () => {
+    // 75 秒で待たせたとき Cloudflare が 502 (origin_bad_gateway) を返した実績がある。
+    // 「短くしすぎた」で壊れることは無い (呼び直しが 1 往復増えるだけ) ので、
+    // 伸ばす向きの変更だけをここで止める。
+    expect(DEFAULT_WAIT_BUDGET_MS).toBeLessThan(OBSERVED_EDGE_CUTOFF_MS);
   });
 });

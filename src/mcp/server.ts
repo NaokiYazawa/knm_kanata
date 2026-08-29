@@ -13,17 +13,30 @@ import type { Env } from "../env";
  * ツール呼び出しは Claude の turn を止めるので、人が答えるまで待たせられる。
  *
  * 待ち方に 2 つの制約がある:
- *  - Cloudflare のエッジは応答が始まらないまま 100 秒ほど経つと切る
+ *  - Cloudflare のエッジは応答が始まらないまま握り続けると切る (実測で 75 秒はもう危ない)
  *  - Claude Code は 2 分を超えたツール呼び出しをバックグラウンドタスクへ回す
- * どちらにも当たらないよう **1 回の待ちは 75 秒で切り上げ**、答えが無ければ «まだです» を返して
+ * どちらにも当たらないよう **1 回の待ちは短く切り上げ**、答えが無ければ «まだです» を返して
  * `ask_wait` を呼び直させる。待ち続ける責務を Claude 側のループに持たせる。
  */
 
 const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
 const LATEST_PROTOCOL_VERSION = PROTOCOL_VERSIONS[0];
 
-const DEFAULT_WAIT_BUDGET_MS = 75_000;
+/**
+ * 1 回の待ちの長さ。**45 秒**なのは実測の結果。
+ *
+ * 当初 75 秒にしていたが、実際に 5 分待たせたとき 4 回目の待ちで Cloudflare が
+ * 502 (`origin_bad_gateway`) を返した。応答が始まらないまま長く握るとエッジ側で切られる、
+ * その境界が 75 秒のすぐ上にある。Claude が呼び直して復帰はしたが、**復帰を運に任せない**。
+ *
+ * 短くしても壊れない — 待ち続ける責務は Claude 側の `ask_wait` ループにあり、
+ * 1 往復増えるだけで人の体感は変わらない。
+ */
+export const DEFAULT_WAIT_BUDGET_MS = 45_000;
 const DEFAULT_WAIT_POLL_MS = 2_000;
+
+/** これを超えると 502 を踏み始める、実測の境界。 */
+export const OBSERVED_EDGE_CUTOFF_MS = 75_000;
 
 /**
  * 待ちの長さを env で動かせるようにしてある。テストで 75 秒待たないためであり、

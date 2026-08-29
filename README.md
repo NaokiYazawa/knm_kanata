@@ -160,34 +160,33 @@ routine には承認する人がいないので、ログに `permission prompt m
 # Discord に触れずに、許可ドメイン・環境変数・MCP 認証・ツール発見・承認まで一度に確かめられる。
 ```
 
-## まだ確かめていないこと
+## 通しで確かめたこと (2026-08-29)
 
-**2 分を超えるツール呼び出しは自動でバックグラウンドタスクに回る** (Claude Code v2.1.212+) という仕様があり、`ask_human` の待ちがそこに触れないかは実測が要る。
-1 回の待ちを **75 秒**に切ってあるのはそれを避けるためだが、初回は «ボタンを押すまで Claude が本当に止まっているか» を必ず目で見ること。
-おかしければ `ASK_WAIT_BUDGET_MS` を短くする（`ask_wait` の呼び直し回数が増えるだけで壊れない）。
+`/claude` から PR 手前まで実機で通した。記録は D1 と routine のログに残っている。
 
-## この配備
-
-| | |
+| 経路 | 結果 |
 |---|---|
-| Worker | `https://kanata.linto-dev.workers.dev` (profile `linto`) |
-| D1 | `kanata-database-prod` |
-| routine | `trig_01XmeEUSizRoH87qxSbaJB6F` |
-| cloud environment | `env_013Q7xTUgZACfKXQRXp1u7ds` |
-| 1 本目の対象リポジトリ | このリポジトリ自身 (`NaokiYazawa/knm_kanata`) |
+| Discord `/claude` → スレッド作成 → routine 起動 | ✅ |
+| cloud session → MCP `report` → Discord のスレッド | ✅ |
+| `ask_human` の選択肢ボタン | ✅ |
+| `ask_human` の自由記述 (モーダル) | ✅ |
+| **`ask_wait` の呼び直しループ (5 分待ち)** | ✅ |
+| Stop hook が転写ログの印から実行を特定 | ✅ (`report(done)` が先に来ていれば二重に出さない) |
 
-root の `.mcp.json` と `.claude/` は **cloud session のための実配線**（`repo-template/` は
-他のリポジトリへ配る汎用のひな形で、こちらは実値を持つ）。
+**待ちの実測 (5 分 19 秒 待たせたとき):**
 
-そのため **手元でこのリポジトリを Claude Code で開くと `kanata` の MCP サーバーが繋がらない**。
-`KANATA_TOKEN` がシェルに無いので 401 になるだけで、害は無い。手元でも繋ぎたければ:
-
-```bash
-export KANATA_URL=https://kanata.linto-dev.workers.dev
-export KANATA_TOKEN=$(cat .secrets/kanata-token.txt)
+```
+03:11:37  ask_human  → 03:12:53  pending   (76 秒)
+03:12:54  ask_wait   → 03:14:09  pending   (75 秒)
+03:14:10  ask_wait   → 03:15:18  ERROR 502 Bad gateway (origin_bad_gateway)
+03:15:19  ask_wait   → 03:16:34  pending   (75 秒)
+03:16:36  ask_wait   → 03:16:59  answered "A案"
 ```
 
-こうすると **手元の Claude Code も Discord へ聞きに来る**ようになる。
+懸念していた «2 分を超えたツール呼び出しがバックグラウンドへ回る» には**当たらなかった**。
+代わりに **75 秒はエッジの限界に近すぎる**ことが分かった (4 回目で 502)。Claude が呼び直して
+復帰はしたが、復帰を運に任せないので **1 回の待ちは 45 秒**に縮めてある。短くしても壊れない —
+待ち続ける責務は Claude 側のループにあり、1 往復増えるだけで人の体感は変わらない。
 
 ## 開発
 
