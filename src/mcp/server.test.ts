@@ -147,7 +147,7 @@ describe("ask_human の握り", () => {
     const response = await handleMcp(askCall(sessionKey, { options: ["A案", "B案"] }), env);
     expect(response.headers.get("content-type")).toContain("text/event-stream");
 
-    const ask = await repo.findOpenAskInThread("th-1");
+    const ask = await repo.findLiveAskInThread("th-1", new Date(0).toISOString());
     expect(ask?.messageId).toBe("msg-1");
     expect((await repo.getSession(sessionKey))?.status).toBe("waiting");
 

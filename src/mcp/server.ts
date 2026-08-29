@@ -275,7 +275,7 @@ async function askHuman(
   await repo.attachAskMessage(ask.askId, posted.value.id);
   await repo.setStatus(sessionKey, "waiting");
 
-  return holdForAnswer(id, repo, ask.askId, env, token, ctx);
+  return holdForAnswer(id, repo, ask.askId, sessionKey, env, token, ctx);
 }
 
 async function askWait(
@@ -289,7 +289,7 @@ async function askWait(
   const repo = new Repo(env.DB);
   const ask = await repo.getAsk(askId);
   if (!ask) return textResult(id, `ask_id «${askId}» が見つかりません。`, true);
-  return holdForAnswer(id, repo, askId, env, token, ctx);
+  return holdForAnswer(id, repo, askId, ask.sessionKey, env, token, ctx);
 }
 
 /**
@@ -303,6 +303,7 @@ function holdForAnswer(
   id: JsonRpcId,
   repo: Repo,
   askId: string,
+  sessionKey: string,
   env: Env,
   token: string | number | null,
   ctx?: Waitable,
@@ -349,6 +350,8 @@ function holdForAnswer(
         }
         if (Date.now() - lastPing >= pingMs) {
           // コメント行は沈黙を作らないため。progress 通知は MCP 側の idle 判定のため。
+          // touchSession は «このセッションはまだ生きている» の印 (repo.findLiveAskInThread が見る)。
+          await repo.touchSession(sessionKey);
           await write(": ping\n\n");
           if (token !== null) {
             ticks += 1;

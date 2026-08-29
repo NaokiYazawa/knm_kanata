@@ -20,6 +20,16 @@ import { DiscordRest, isThreadChannelType } from "./rest";
 /** `waitUntil` だけを要求する。Hono と workers-types で ExecutionContext の形が違うため。 */
 type Waitable = { waitUntil(promise: Promise<unknown>): void };
 
+/**
+ * 生存の印がこれより古いセッションは死んだものとして扱う。握りは 15 秒ごとに印を更新するので、
+ * 生きていれば必ず内側に入る。長めに取ってあるのは «一瞬の詰まりで会話が切れた» を避けるため。
+ */
+const LIVE_WINDOW_MS = 3 * 60_000;
+
+function liveSince(): string {
+  return new Date(Date.now() - LIVE_WINDOW_MS).toISOString();
+}
+
 const EPHEMERAL = 64;
 
 const TYPE_PING = 1;
@@ -118,7 +128,7 @@ async function handleCommand(
   // このスレッドに «まだ答えていない質問» があれば、新規起動ではなく **続き** として渡す。
   // 待っているセッションは生きているので、同じ文脈のまま話が続く。
   const repo = new Repo(env.DB);
-  const openAsk = await repo.findOpenAskInThread(channelId);
+  const openAsk = await repo.findLiveAskInThread(channelId, liveSince());
   if (openAsk) {
     const written = await repo.answerAsk(openAsk.askId, task, userId);
     if (!written) return ephemeral("ほぼ同時に別の回答が入りました。");

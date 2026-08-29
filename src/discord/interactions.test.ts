@@ -115,6 +115,53 @@ describe("/claude", () => {
     expect(seen).toContain("https://api.anthropic.com/v1/claude_code/routines/trig_test/fire");
   });
 
+  it("死んだセッションの未回答の質問は «続き» として扱わない (スレッドの穴を作らない)", async () => {
+    const repo = new Repo(env.DB);
+    await repo.createSession({
+      sessionKey: "KANATA-deaddeaddeaddead",
+      project: "demo",
+      prompt: "落ちた指示",
+      requesterId: "owner-1",
+      channelId: "ch-1",
+    });
+    await repo.attachThread("KANATA-deaddeaddeaddead", "th-dead");
+    await repo.createAsk({
+      askId: "ask_0000000000000dead",
+      sessionKey: "KANATA-deaddeaddeaddead",
+      question: "もう誰も待っていない質問",
+      options: [],
+      allowFreeText: true,
+    });
+    // 生存の印を «十分に古い» ところへ倒す (握りが止まった状態)。
+    await env.DB.prepare("UPDATE sessions SET updated_at = ? WHERE session_key = ?")
+      .bind(new Date(Date.now() - 60 * 60_000).toISOString(), "KANATA-deaddeaddeaddead")
+      .run();
+
+    replies.set("https://discord.com/api/v10/webhooks/app-1/itok/messages/@original", {
+      status: 200,
+      body: { id: "msg-d", channel_id: "th-dead" },
+    });
+    replies.set("https://api.anthropic.com/v1/claude_code/routines/trig_test/fire", {
+      status: 200,
+      body: {
+        claude_code_session_id: "session_d",
+        claude_code_session_url: "https://claude.ai/code/session_d",
+      },
+    });
+    replies.set("https://discord.com/api/v10/channels/th-dead/messages", {
+      status: 200,
+      body: { id: "msg-dn" },
+    });
+
+    const response = await handleInteraction(command("これは新しい話", "th-dead"), env, ctx);
+    // 回答ではなく «起動» として扱われる。
+    expect(((await response.json()) as { type: number }).type).toBe(5);
+    await settle();
+
+    expect((await repo.getAsk("ask_0000000000000dead"))?.answer).toBeNull();
+    expect(seen).toContain("https://api.anthropic.com/v1/claude_code/routines/trig_test/fire");
+  });
+
   it("持ち主以外は何もできず、自分の ID を返してもらえる", async () => {
     const response = await handleInteraction(command("なにか", "th-x", "someone-else"), env, ctx);
     const body = (await response.json()) as { data: { content: string; flags: number } };

@@ -238,23 +238,35 @@ export class Repo {
   }
 
   /**
-   * そのスレッドで «まだ答えていない質問» を 1 つ引く。
+   * そのスレッドで «**生きている**セッションが待っている質問» を 1 つ引く。
    *
    * これがあると `/claude` の意味が 2 つになる: 待っている質問があればその **回答**、
    * 無ければ新しいセッションの **起動**。スレッドが 1 本の会話に見えるのはこの分岐のおかげ。
+   *
+   * 生死を見るのが肝。落ちたセッションの未回答の質問が残っていると、以後そのスレッドの
+   * `/claude` を永久に飲み込む «穴» になる (答えを受け取る相手がもう居ない)。
+   * 握っている間だけ `touchSession` が印を更新するので、それが新しいものだけを «生きている» とみなす。
    */
-  async findOpenAskInThread(threadId: string): Promise<Ask | null> {
+  async findLiveAskInThread(threadId: string, freshSinceIso: string): Promise<Ask | null> {
     const row = await this.db
       .prepare(
         `SELECT a.* FROM asks a
            JOIN sessions s ON s.session_key = a.session_key
-          WHERE s.thread_id = ? AND a.answer IS NULL
+          WHERE s.thread_id = ? AND a.answer IS NULL AND s.updated_at >= ?
           ORDER BY a.created_at DESC
           LIMIT 1`,
       )
-      .bind(threadId)
+      .bind(threadId, freshSinceIso)
       .first<AskRow>();
     return row ? toAsk(row) : null;
+  }
+
+  /** 握っている間の生存の印。**これが止まったセッションは死んだものとして扱う**。 */
+  async touchSession(sessionKey: string): Promise<void> {
+    await this.db
+      .prepare("UPDATE sessions SET updated_at = ? WHERE session_key = ?")
+      .bind(nowIso(), sessionKey)
+      .run();
   }
 
   async attachAskMessage(askId: string, messageId: string): Promise<void> {
