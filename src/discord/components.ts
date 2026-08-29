@@ -1,6 +1,5 @@
 import type { Ask } from "../db/repo";
 import { freeCustomId, MODAL_ANSWER_FIELD, modalCustomId, pickCustomId } from "../domain/ask";
-import { toJstLabel } from "../domain/time";
 import type { MessagePayload } from "./rest";
 
 /**
@@ -8,10 +7,8 @@ import type { MessagePayload } from "./rest";
  * ここ 1 箇所に閉じ込め、ハンドラは «何を出すか» だけを言う。
  */
 
-const COLOR_ASK = 0xfee75c;
 const COLOR_START = 0x5865f2;
 const COLOR_PROGRESS = 0x99aab5;
-const COLOR_DONE = 0x57f287;
 const COLOR_ALERT = 0xed4245;
 
 const BUTTONS_PER_ROW = 5;
@@ -25,48 +22,48 @@ function buttonRows(components: unknown[]): unknown[] {
   return rows;
 }
 
+/** Discord のメッセージ本文の上限。 */
+const MAX_CONTENT = 2000;
+
+/**
+ * Claude の問いかけ。**見出しも枠も付けない** — ターミナルの Claude Code がそうであるように、
+ * ただ本人が喋っているように見せる。押せる口があることはボタンが示すので、
+ * 「確認したいことがあります」と宣言する必要は無い。
+ */
 export function askMessage(ask: Ask): MessagePayload {
   const buttons: unknown[] = ask.options.map((option, index) => ({
     type: 2,
-    style: 1,
+    style: 2,
     label: option,
     custom_id: pickCustomId(ask.askId, index),
   }));
   if (ask.allowFreeText) {
     buttons.push({
       type: 2,
-      style: 2,
-      label: "✍️ 自由に書く",
+      style: 1,
+      label: "✍️ 書く",
       custom_id: freeCustomId(ask.askId),
     });
   }
 
   return {
-    embeds: [
-      {
-        color: COLOR_ASK,
-        title: "❓ 確認したいことがあります",
-        description: ask.question,
-        footer: { text: `${ask.askId} · ${toJstLabel(ask.createdAt)}` },
-      },
-    ],
+    content: ask.question.slice(0, MAX_CONTENT),
     components: buttonRows(buttons),
+    allowed_mentions: { parse: [] },
   };
 }
 
-/** 回答後の姿。ボタンを消して «誰が何と答えたか» を残す (押せる口が残ると二度押しを誘う)。 */
-export function askAnsweredMessage(ask: Ask, answer: string, answeredBy: string): MessagePayload {
+/**
+ * 回答後の姿。ボタンだけを消し、選んだものを小さく添える (押せる口が残ると二度押しを誘う)。
+ * 自由記述での回答は本人の発言として別に見えているので、ここでは控えめに出す。
+ */
+export function askAnsweredMessage(ask: Ask, answer: string, _answeredBy: string): MessagePayload {
+  const head = ask.question.slice(0, 1700);
+  const tail = `\n-# → ${answer.replace(/\s+/g, " ")}`;
   return {
-    embeds: [
-      {
-        color: COLOR_PROGRESS,
-        title: "✅ 回答しました",
-        description: ask.question,
-        fields: [{ name: "回答", value: answer.slice(0, 1024) }],
-        footer: { text: `${ask.askId} · <@${answeredBy}>` },
-      },
-    ],
+    content: (head + tail).slice(0, MAX_CONTENT),
     components: [],
+    allowed_mentions: { parse: [] },
   };
 }
 
@@ -115,17 +112,20 @@ export function startedMessage(input: {
   };
 }
 
+/**
+ * Claude からの報告。progress は **地の文**で出す (これも本人の発言なので枠を付けない)。
+ * done と blocked だけは «状態が変わった» ことを示すので印を残す。
+ */
 export function reportMessage(kind: string, text: string): MessagePayload {
-  const preset =
-    kind === "done"
-      ? { color: COLOR_DONE, title: "✅ 完了" }
-      : kind === "blocked"
-        ? { color: COLOR_ALERT, title: "⛔ 進めません" }
-        : { color: COLOR_PROGRESS, title: "… 進行中" };
-
+  if (kind === "blocked") {
+    return {
+      embeds: [{ color: COLOR_ALERT, title: "⛔ 進めません", description: text.slice(0, 4000) }],
+      allowed_mentions: { parse: [] },
+    };
+  }
+  const suffix = kind === "done" ? "\n-# ✅ この会話はここで終わりました" : "";
   return {
-    embeds: [{ ...preset, description: text.slice(0, 4000) }],
-    // 通知本文に @ が混ざっても誰も呼び出さない。
+    content: (text.slice(0, 1900) + suffix).slice(0, MAX_CONTENT),
     allowed_mentions: { parse: [] },
   };
 }

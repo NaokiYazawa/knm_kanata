@@ -133,9 +133,10 @@ async function handleCommand(
     const written = await repo.answerAsk(openAsk.askId, task, userId);
     if (!written) return ephemeral("ほぼ同時に別の回答が入りました。");
     ctx.waitUntil(continueThread(env, openAsk, task, userId));
+    // 本人の発言として見えるように、枠を付けず地の文で返す。
     return json({
       type: REPLY_MESSAGE,
-      data: noticeMessage("↩️ 続きを渡しました", task, false),
+      data: { content: task.slice(0, 2000), allowed_mentions: { parse: [] } },
     });
   }
 
