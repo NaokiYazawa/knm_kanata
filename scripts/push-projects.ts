@@ -1,65 +1,44 @@
 /**
- * `.env.local` の `PROJECTS_JSON` を本番の secret へ流す。
- * `pnpm run projects:push -- --profile linto`
+ * `projects.json` を本番の secret (`PROJECTS_JSON`) へ送る。
  *
- * ## なぜこの口が要るか
+ *   pnpm run projects:push -- --profile linto
+ *   pnpm run projects:push -- --dry-run     # 送らずに、送る値だけ見る
  *
- * secret は書き込み専用で読み出せない (`wrangler secret list` は名前しか返さない)。
- * そして `wrangler secret put` は値を丸ごと置き換える。つまりプロジェクトを 1 つ足すとき、手元に全文が無ければ既にある分が消える。
- * 消えて痛いのは routine の fire トークンで、これも «一度しか表示されない» ので、失うと web UI で発行し直す (= 前のを失効させる) しかない。
+ * 正本をなぜ手元に持つのかは `load-projects.ts` に書いてある。ここは «見せて、渡す» だけ。
  *
- * だから **`.env.local` を正本にする**。ここを直して push する、という 1 本道にしておけば、「今の値を思い出す」作業が発生しない。
- * `.env.local` は `.gitignore` 済みで、`commands:register` も同じファイルを読んでいる。
- *
- * トークンを引数やターミナルに貼らないのも狙いの 1 つ (シェルの履歴に残さない)。
- *
- * **値は `.env.local` から直に読む。環境変数は見ない。** `PROJECTS_JSON=… node scripts/…` と
- * 手で流し込めてしまうと、動作確認のつもりの 1 行が本番を上書きできる。実際にそれで本番の
- * secret を壊した (2026-08-29)。正本は 1 つ、経路も 1 つにしておく。
+ * **`--dry-run` はこのスクリプトを試すための唯一の安全な口。** 偽の `wrangler` を PATH の先頭に
+ * 置いて確かめようとすると、本物が走って本番の secret を上書きする (2 回やった)。
+ * 本番へ書くコマンドを影武者で試そうとしないこと。
  */
 
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { parseEnv } from "node:util";
-import { isProjectsProblem, parseProjects } from "../src/domain/projects.ts";
+import { describe, loadProjects } from "./load-projects.ts";
 
-const envPath = fileURLToPath(new URL("../.env.local", import.meta.url));
-
-let raw: string | undefined;
+let loaded: ReturnType<typeof loadProjects>;
 try {
-  raw = parseEnv(readFileSync(envPath, "utf8")).PROJECTS_JSON;
-} catch {
-  console.error(`${envPath} を読めません。`);
+  loaded = loadProjects();
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
 }
 
-if (!raw) {
-  console.error("PROJECTS_JSON が .env.local にありません。");
-  console.error("本番には設定済みでも、secret は読み出せないので手元に正本を作る必要があります。");
-  process.exit(1);
+const args = process.argv.slice(2);
+const dryRun = args.includes("--dry-run");
+
+// トークンは出さない。何を送るかだけ。
+console.log(`${loaded.projects.length} 件を${dryRun ? "送るところ" : "送ります"}:`);
+console.log(describe(loaded.projects));
+
+if (dryRun) {
+  console.log(`\n送る値: ${loaded.value.length} 文字の 1 行 JSON (中身は出さない)`);
+  console.log("--dry-run なので wrangler は呼びません。");
+  process.exit(0);
 }
 
-// 本体と同じ検証を通す。壊れた値を push すると `/claude` が丸ごと止まるので、その前に落とす。
-const projects = parseProjects(raw);
-if (isProjectsProblem(projects)) {
-  console.error(`PROJECTS_JSON を読めません: ${projects.message}`);
-  process.exit(1);
-}
-
-// トークンは出さない。何を送るかだけ見せる。
-console.log(`${projects.length} 件を送ります:`);
-for (const project of projects) {
-  const channel = project.channelId ?? "(チャンネル未設定)";
-  console.log(`  - ${project.name}  ${channel}  ${project.repoUrl}`);
-}
-
-const child = spawn(
-  "wrangler",
-  ["secret", "put", "PROJECTS_JSON", ...process.argv.slice(2)],
+const child = spawn("wrangler", ["secret", "put", "PROJECTS_JSON", ...args], {
   // 値は stdin で渡す (引数にすると `ps` とシェルの履歴に載る)。
-  { stdio: ["pipe", "inherit", "inherit"] },
-);
-child.stdin.write(raw);
+  stdio: ["pipe", "inherit", "inherit"],
+});
+child.stdin.write(loaded.value);
 child.stdin.end();
 child.on("exit", (code) => process.exit(code ?? 1));

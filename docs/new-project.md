@@ -108,40 +108,45 @@ routine は**承認する人がいない状態で自律実行される**ので�
 
 ---
 
-## 5. Worker — `PROJECTS_JSON` に 1 要素足す
+## 5. Worker — `projects.json` に 1 要素足す
+
+**手元の `projects.json` が正本。** `.gitignore` 済みで、中に routine の fire トークンが入る。
+無ければ `cp projects.example.json projects.json`。
 
 ```json
 [
   {
     "name": "alpha",
-    "channelId": "1543…",
     "repoUrl": "https://github.com/NaokiYazawa/alpha",
     "fireUrl": "https://api.anthropic.com/v1/claude_code/routines/trig_…/fire",
-    "fireToken": "sk-ant-oat01-…"
+    "fireToken": "sk-ant-oat01-…",
+    "channelId": "1543…"
   }
 ]
 ```
 
-**`.env.local` の `PROJECTS_JSON` が正本。** ここに 1 要素足してから送る:
+| 鍵 | 要否 | 何を書くか |
+|---|---|---|
+| `name` | 必須 | `/claude` の project 選択肢に出る名前。重複不可 |
+| `repoUrl` | 必須 | GitHub の URL。起動メッセージにリポジトリ名として出す |
+| `fireUrl` | 必須 | routine の API トリガの URL |
+| `fireToken` | 必須 | 同トークン (`sk-ant-oat01-…`)。**一度しか表示されない** |
+| `channelId` | 任意 | このチャンネルの `/claude` が自動でこのプロジェクトになる。重複不可 |
+| `repos` | 任意 | 触れるリポジトリの一覧 (**表示用**)。モノレポなら書かない |
 
 ```bash
-pnpm run projects:push -- --profile linto   # .env.local を検証して secret へ送る
-pnpm run commands:register                  # /claude の project 選択肢を更新 (任意)
+pnpm run projects:push -- --dry-run          # 何を送るか先に見る
+pnpm run projects:push -- --profile linto    # 検証して secret へ送る
+pnpm run commands:register                   # /claude の project 選択肢を更新 (任意)
 ```
 
-**secret は書き込み専用で読み出せない**（`wrangler secret list` は名前しか返さない）。そして
-`wrangler secret put` は**値を丸ごと置き換える**ので、手元に全文が無いと既存のプロジェクトが
-消える。消えて痛いのは `fireToken` で、これも「一度しか表示されない」ため、失うと web UI で
-発行し直す（＝前のを失効させる）しかない。
+**secret は書き込み専用で読み出せない** (`wrangler secret list` は名前しか返さない)。そして
+`wrangler secret put` は**値を丸ごと置き換える**ので、`projects.json` に既存のプロジェクトが
+残っていないと消える。消えて痛いのは `fireToken` で、失うと web UI で発行し直す
+(= 前のを失効させる) しかない。**足すときは配列に要素を追加する。**
 
-`projects:push` は `.env.local` **だけ**を読み、本体と同じ検証を通してから送る。壊れた値を
-push すると `/claude` が丸ごと止まるので、その前に落とす。
-
-複数リポジトリなら `"repos": ["NaokiYazawa/api", "NaokiYazawa/web"]` を足す
-(起動メッセージに出す**表示用**。正本は routine の `sources` で、ここに書いても触れるようには
-ならない)。モノレポなら書かなくてよい — `repoUrl` から作る。
-
----
+`projects:push` は `projects.json` **だけ**を読み、本体と同じ検証を通してから送る。壊れた値を
+送ると `/claude` が丸ごと止まるので、その前に落とす。
 
 ## 6. 動かして確かめる
 

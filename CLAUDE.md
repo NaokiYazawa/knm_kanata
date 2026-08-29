@@ -241,7 +241,7 @@ Worker のコードだけ正しくても動かない。routine と cloud environ
 | cloud environment の環境変数 | `KANATA_URL` / `KANATA_TOKEN` |
 | routine の `allowed_tools` | `mcp__kanata` と 3 つのツール名 (無いと承認待ちで固まる) |
 | Discord Developer Portal | **MESSAGE CONTENT INTENT** (無いと Gateway が close 4014 で切られる) |
-| `.env.local` の `PROJECTS_JSON` | 本番の secret (**読み出せないので手元が正本**。`projects:push` で送る) |
+| 手元の `projects.json` | 本番の secret `PROJECTS_JSON` (**読み出せないので手元が正本**。`projects:push` で送る) |
 | cloud environment の Setup script | `cloud-setup.sh` (**リポジトリが 2 本以上の routine のときだけ**。モノレポなら貼らない) |
 
 どれが欠けても症状は «ask_human が呼ばれない» で同じに見える。切り分けは

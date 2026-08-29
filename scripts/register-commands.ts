@@ -5,10 +5,12 @@
  * `DISCORD_GUILD_ID` を入れてギルド限定で登録する (即時反映)。
  *
  * 必要な環境変数 (.env.local に置く):
- *   DISCORD_APPLICATION_ID / DISCORD_BOT_TOKEN / PROJECTS_JSON / (任意) DISCORD_GUILD_ID
+ *   DISCORD_APPLICATION_ID / DISCORD_BOT_TOKEN / (任意) DISCORD_GUILD_ID
+ *
+ * `project` の選択肢は `projects.json` から作る (`projects:push` と同じ正本を見る)。
  */
 
-export {};
+import { loadProjects } from "./load-projects.ts";
 
 const applicationId = process.env.DISCORD_APPLICATION_ID;
 const botToken = process.env.DISCORD_BOT_TOKEN;
@@ -19,20 +21,14 @@ if (!applicationId || !botToken) {
   process.exit(1);
 }
 
-type ProjectEntry = { name?: unknown };
-
+/** まだ projects.json が無くてもコマンドは登録できる (選択肢が空になるだけ)。 */
 function projectChoices(): { name: string; value: string }[] {
-  const raw = process.env.PROJECTS_JSON;
-  if (!raw) return [];
   try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map((entry: ProjectEntry) => (typeof entry.name === "string" ? entry.name : null))
-      .filter((name): name is string => name !== null)
-      .slice(0, 25)
-      .map((name) => ({ name, value: name }));
-  } catch {
+    return loadProjects()
+      .projects.slice(0, 25)
+      .map((project) => ({ name: project.name, value: project.name }));
+  } catch (error) {
+    console.warn(`project の選択肢は作りません: ${error instanceof Error ? error.message : error}`);
     return [];
   }
 }

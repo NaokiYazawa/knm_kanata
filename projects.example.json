@@ -1,0 +1,16 @@
+[
+  {
+    "name": "kanata",
+    "repoUrl": "https://github.com/NaokiYazawa/knm_kanata",
+    "fireUrl": "https://api.anthropic.com/v1/claude_code/routines/trig_XXXX0/fire",
+    "fireToken": "sk-ant-oat01-XXXX0",
+    "channelId": "1543000000000000000"
+  },
+  {
+    "name": "leafchat",
+    "repoUrl": "https://github.com/linto-dev-collections/leafchat",
+    "fireUrl": "https://api.anthropic.com/v1/claude_code/routines/trig_XXXX1/fire",
+    "fireToken": "sk-ant-oat01-XXXX1",
+    "channelId": "1543000000000000001"
+  }
+]
