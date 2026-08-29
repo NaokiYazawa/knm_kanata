@@ -87,12 +87,7 @@ pnpm run deploy                      # https://kanata.<subdomain>.workers.dev �
 6. コマンドを登録する:
 
 ```bash
-cat > .env.local <<'ENV'
-DISCORD_APPLICATION_ID=...
-DISCORD_BOT_TOKEN=...
-DISCORD_GUILD_ID=...        # 入れるとそのサーバーだけに即時反映 (グローバルは数分かかる)
-PROJECTS_JSON=[...]         # project の選択肢を作るのに使う
-ENV
+cp .env.example .env.local   # 各鍵の意味と PROJECTS_JSON の書き方はこのファイルにある
 pnpm run commands:register
 ```
 
