@@ -5,6 +5,12 @@
   "compatibility_date": "2026-08-01",
   "observability": { "enabled": true },
 
+  // 秘密ではないので設定に置く。Public Key / Bot Token / 自分の Discord ユーザー ID は
+  // `wrangler secret put` 側 (README 参照)。
+  "vars": {
+    "DISCORD_APPLICATION_ID": "1543076100442300506"
+  },
+
   "d1_databases": [
     {
       "binding": "DB",

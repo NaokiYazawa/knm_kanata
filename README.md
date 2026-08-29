@@ -141,6 +141,27 @@ Discord で `/claude task:「READMEのtypoを直してPRを作って」`。
 1 回の待ちを **75 秒**に切ってあるのはそれを避けるためだが、初回は «ボタンを押すまで Claude が本当に止まっているか» を必ず目で見ること。
 おかしければ `ASK_WAIT_BUDGET_MS` を短くする（`ask_wait` の呼び直し回数が増えるだけで壊れない）。
 
+## この配備
+
+| | |
+|---|---|
+| Worker | `https://kanata.linto-dev.workers.dev` (profile `linto`) |
+| D1 | `kanata-database-prod` |
+| 1 本目の対象リポジトリ | このリポジトリ自身 (`NaokiYazawa/knm_kanata`) |
+
+root の `.mcp.json` と `.claude/` は **cloud session のための実配線**（`repo-template/` は
+他のリポジトリへ配る汎用のひな形で、こちらは実値を持つ）。
+
+そのため **手元でこのリポジトリを Claude Code で開くと `kanata` の MCP サーバーが繋がらない**。
+`KANATA_TOKEN` がシェルに無いので 401 になるだけで、害は無い。手元でも繋ぎたければ:
+
+```bash
+export KANATA_URL=https://kanata.linto-dev.workers.dev
+export KANATA_TOKEN=$(cat .secrets/kanata-token.txt)
+```
+
+こうすると **手元の Claude Code も Discord へ聞きに来る**ようになる。
+
 ## 開発
 
 ```bash
