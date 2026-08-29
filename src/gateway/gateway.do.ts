@@ -50,13 +50,14 @@ const KEY_STATE = "state";
 const KEY_RECONNECTS = "reconnects";
 const KEY_HEARTBEAT_AT = "heartbeatAt";
 const KEY_CONNECT_AT = "connectAt";
-const KEY_LAST_READY_AT = "lastReadyAt";
+const KEY_LAST_EVENT_AT = "lastEventAt";
 
 export type GatewayStatus = Readonly<{
   state: GatewayState["kind"] | "stopped";
   healthy: boolean;
   fatalReason: string | null;
-  lastReadyAt: number | null;
+  /** 最後に Discord から何か届いた時刻。**繋がっているのに無音**を見分けるための値。 */
+  lastEventAt: number | null;
   connected: boolean;
 }>;
 
@@ -161,7 +162,7 @@ export class DiscordGatewayDO extends DurableObject<Env> {
       state: this.token() ? state.kind : "stopped",
       healthy: this.socket !== null && gatewayIsHealthy(state),
       fatalReason: state.kind === "fatal" ? state.reason : null,
-      lastReadyAt: await this.readNumber(KEY_LAST_READY_AT),
+      lastEventAt: await this.readNumber(KEY_LAST_EVENT_AT),
       connected: this.socket !== null,
     };
   }
@@ -335,7 +336,9 @@ export class DiscordGatewayDO extends DurableObject<Env> {
   private async apply([next, actions]: GatewayStep): Promise<void> {
     await this.saveState(next);
     if (next.kind === "live" && next.ready) {
-      await this.ctx.storage.put(KEY_LAST_READY_AT, Date.now());
+      // READY のときだけではなく **何か届くたび** に更新する。«繋がっているのに無音» は
+      // ソケットが開いていることでは見分けられないので、これが唯一の手掛かりになる。
+      await this.ctx.storage.put(KEY_LAST_EVENT_AT, Date.now());
     }
     if (next.kind === "fatal") {
       // 直し方が書いてある唯一の手掛かりなのでログにも残す。理由だけで token は載せない。

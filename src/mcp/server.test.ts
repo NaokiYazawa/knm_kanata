@@ -129,6 +129,86 @@ describe("MCP のハンドシェイク", () => {
   });
 });
 
+/**
+ * 握りは落ちる (実測: 15 分・6 分 22 秒は握れたのに、別の回は 5 分 00 秒で切れた)。
+ * 落ちたとき Claude に届くのは **ask_id を含まない**エラーなので、`ask_wait` では戻れない。
+ * Claude にできるのは `ask_human` を呼び直すことだけで、それが素通りすると
+ * 「同じ質問が Discord に 2 通」「切れている間の答えが宙に浮く」が同時に起きる。
+ *
+ * 2026-08-29 14:38 の質問を実際に 1 つ失った経路なので、両側をここで固める。
+ */
+describe("握りが落ちた後の呼び直し", () => {
+  it("答えがもう入っていたら、質問を出し直さずその答えを返す", async () => {
+    const sessionKey = "KANATA-99998888aaaabbbb";
+    const repo = await seedSession(sessionKey, "th-drop");
+    expectDiscordPost("th-drop", "msg-drop");
+
+    // 1 回目。ここで握りが «落ちた» ことにする (応答は読み捨てる)。
+    const first = await handleMcp(askCall(sessionKey, { question: "長い回答その 1" }), env);
+    void first.body?.cancel();
+    const ask = await repo.findOpenAsk(sessionKey);
+
+    // 切れている間に人が答えた。
+    expect(await repo.answerAsk(ask?.askId ?? "", "本当に聞きたかったこと", "owner-1")).toBe(true);
+
+    // Claude は ask_id を持っていないので ask_human を呼び直すしかない。
+    const retry = await handleMcp(askCall(sessionKey, { question: "(再送)" }), env);
+    const payload = JSON.parse(toolText(await retry.json()));
+    expect(payload).toMatchObject({
+      status: "answered",
+      ask_id: ask?.askId,
+      answer: "本当に聞きたかったこと",
+    });
+
+    // **質問は 1 通しか出ていない** (Discord への投稿は 1 回だけ)。
+    expect(calls.filter((c) => c.url.endsWith("/messages")).length).toBe(1);
+    expect((await repo.getSession(sessionKey))?.status).toBe("running");
+  });
+
+  it("まだ答えが無いなら、二重に出さず同じ問いを握り直す", async () => {
+    const sessionKey = "KANATA-7777666655554444";
+    const repo = await seedSession(sessionKey, "th-again");
+    expectDiscordPost("th-again", "msg-again");
+
+    const first = await handleMcp(askCall(sessionKey, { question: "長い回答その 2" }), env);
+    void first.body?.cancel();
+    const ask = await repo.findOpenAsk(sessionKey);
+
+    const retry = await handleMcp(askCall(sessionKey, { question: "(再送)" }), env);
+    // 握り直しているので SSE で戻る。
+    expect(retry.headers.get("content-type")).toContain("text/event-stream");
+    await repo.answerAsk(ask?.askId ?? "", "あとから答えた", "owner-1");
+    const messages = await readSse(retry);
+    expect(JSON.parse(toolText(messages[messages.length - 1]))).toMatchObject({
+      ask_id: ask?.askId,
+      answer: "あとから答えた",
+    });
+
+    // 出た質問はやはり 1 通だけ。
+    expect(calls.filter((c) => c.url.endsWith("/messages")).length).toBe(1);
+  });
+
+  it("渡し終えた問いを蘇らせない (次の質問はちゃんと新しく出る)", async () => {
+    const sessionKey = "KANATA-3333222211110000";
+    const repo = await seedSession(sessionKey, "th-next");
+    expectDiscordPost("th-next", "msg-next");
+
+    const first = await handleMcp(askCall(sessionKey, { question: "1 つめ" }), env);
+    const askId = (await repo.findOpenAsk(sessionKey))?.askId ?? "";
+    await repo.answerAsk(askId, "A案", "owner-1");
+    await readSse(first); // 握りが答えを渡し切る
+
+    const second = await handleMcp(askCall(sessionKey, { question: "2 つめ" }), env);
+    expect(second.headers.get("content-type")).toContain("text/event-stream");
+    void second.body?.cancel();
+
+    const latest = await repo.findOpenAsk(sessionKey);
+    expect(latest?.askId).not.toBe(askId);
+    expect(latest?.question).toBe("2 つめ");
+    expect(calls.filter((c) => c.url.endsWith("/messages")).length).toBe(2);
+  });
+});
+
 describe("ask_human の握り", () => {
   it("知らない session_key は握らず、その場で断る", async () => {
     const response = await handleMcp(askCall("KANATA-ffffffffffffffff"), env);

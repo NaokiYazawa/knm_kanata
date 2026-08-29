@@ -173,7 +173,7 @@ Discord で `/claude task:「READMEのtypoを直してPRを作って」`。
 
 ```bash
 curl -H "Authorization: Bearer $KANATA_TOKEN" https://<worker>/gateway/status
-# {"state":"live","healthy":true,"fatalReason":null,"lastReadyAt":...,"connected":true}
+# {"state":"live","healthy":true,"fatalReason":null,"lastEventAt":...,"connected":true}
 
 curl -X POST -H "Authorization: Bearer $KANATA_TOKEN" https://<worker>/gateway/reset
 ```
@@ -199,6 +199,23 @@ curl -X POST -H "Authorization: Bearer $KANATA_TOKEN" https://<worker>/gateway/r
 **16.6 分の待ちで turn は 2 回だけ。** 45 秒周期のポーリングなら 22 turn だったので 11 分の 1。
 502 もバックグラウンド化も起きず、progress 通知も 37 回流れた。turn が増えるのは «握りの上限
 (`ASK_HOLD_MS`、既定 15 分) に達したとき» だけなので、伸ばせばさらに減る。
+
+## 握りは落ちる (落ちても失わない)
+
+壁を全部外しても transport は落ちる。実測では **15 分 01 秒**と **6 分 22 秒**は握れたのに、
+別の回は **5 分 00 秒**で切れた。時間では説明が付かないので、こちらでは防げない。
+
+落ちたとき Claude に届くのは `transport dropped mid-call` という **`ask_id` を含まない**
+エラーで、`ask_wait` では拾い直せない。だから `ask_human` を **セッション単位で冪等**にしてある:
+
+| 呼び直したとき | 返るもの |
+|---|---|
+| 切れている間に答えが入っていた | **その答え**（質問は出し直さない） |
+| まだ未回答 | 同じ問いを握り直す（**Discord に 2 通目を出さない**） |
+| 未配達の問いが無い | ふつうに新しい問いを立てる |
+
+routine のプロンプトにも「接続エラーで落ちたら `question` は `"(再送)"` の 1 語でよい」と
+書いてある。回答を丸ごと作り直させないため。
 
 ## 詰まりどころ (実際に踏んだもの)
 

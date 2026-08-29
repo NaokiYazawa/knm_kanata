@@ -45,6 +45,7 @@ cloud session は **サブスク席の枠のまま** なので、こちらを使
 | --- | --- |
 | `domain/ids.ts` の `KANATA-<16hex>` | `repo-template/.claude/hooks/kanata-stop.sh` の grep |
 | `domain/prompt.ts` の `ROUTINE_PROMPT` | claude.ai の routine に貼ってある本文 |
+| `mcp/server.ts` の «落ちたら呼び直す» 契約 | `ROUTINE_PROMPT` とツール説明が言う復帰手順 |
 | `domain/prompt.ts` の `buildFireText` | 同上 (payload の 1 行目を session_key として読む前提) |
 | `mcp/server.ts` のツール名 | `ROUTINE_PROMPT` が名指ししている `mcp__kanata__*` |
 | `domain/gateway.ts` の `GATEWAY_INTENTS` | Developer Portal の Privileged Gateway Intents |
@@ -70,8 +71,32 @@ cloud session は **サブスク席の枠のまま** なので、こちらを使
 **3 つ目だけコードの外 (cloud environment の環境変数) にある。** 欠けたときの症状は
 «質問を出した直後に Claude が勝手に先へ進む» で、握りの実装は正しいまま壊れる。
 
-ping の間隔がエッジの限界より内側にあることは `server.test.ts` の guard が守る。握りが切れた
-ときのために `ask_wait` は残すが、**保険であって主経路ではない**。
+ping の間隔がエッジの限界より内側にあることは `server.test.ts` の guard が守る。
+
+### 5.1 それでも握りは落ちる。落ちても失わせない
+
+壁を全部外しても **transport は落ちる**。実測: 15 分 01 秒・6 分 22 秒は握れたのに、別の回は
+5 分 00 秒で切れた (**時間では説明が付かない = こちらでは防げない**)。
+
+落ちたとき Claude に届くのは `transport dropped mid-call; response for tool "ask_human" was
+lost` という **`ask_id` を含まない**エラーなので、`ask_wait` では拾い直せない。Claude にできるのは
+`ask_human` を呼び直すことだけ。
+
+だから **`ask_human` は «問いを立てる» のではなく «返せていない問いがあれば拾い直す»**:
+
+| そのとき | 返すもの |
+|---|---|
+| 返せていない問いに **答えが入っている** | その答え (質問は出し直さない) |
+| 返せていない問いが **まだ未回答** | 同じ問いを握り直す (Discord に 2 通目を出さない) |
+| 返せていない問いが無い | ふつうに新しい問いを立てる |
+
+**`asks.delivered_at` は «Claude へ書き出せた» 時点で立てる。** ここを立て忘れると同じ答えを
+何度も返し続け、立てるのが早すぎると答えが宙に浮く。拾うのは常に **いちばん新しい** 未配達の
+問い — 古い方を拾うと、会話が先へ進んだ後に昔の答えが蘇る。
+
+これが無かったとき何が起きたか (2026-08-29 14:38): 握りが 5 分で落ち、その 37 秒前に入っていた
+依頼者の質問が宙に浮き、Claude は同じ回答を «(直前の接続が切れたため再送します)» と付けて
+**Discord に 2 通目として出した**。依頼者の質問は誰にも届かないまま消えた。
 
 ## 5.5 スレッドは 1 本の会話
 

@@ -30,7 +30,19 @@ import type { Env } from "../env";
  * | ツールの wall-clock | per-server `timeout` (未設定なら約 28 時間) | `.mcp.json` の `timeout` |
  *
  * 最後の 1 つだけコードの外 (cloud environment の環境変数) にあるので、README に対で書いてある。
- * 握りが切れたときのために `ask_wait` は残す — 保険であって、主経路ではない。
+ *
+ * ## 握りは落ちる。落ちても失わせない
+ *
+ * 壁を全部外しても **transport は落ちる** (実測: 15 分・6 分 22 秒は握れたのに、別の回は
+ * 5 分 00 秒で切れた)。落ちたとき Claude に届くのは
+ * `transport dropped mid-call; response for tool "ask_human" was lost` という
+ * **ask_id を含まない**エラーなので、`ask_wait` では拾い直せない。Claude にできるのは
+ * `ask_human` を呼び直すことだけ。
+ *
+ * だから **`ask_human` は «問いを立てる» のではなく «返せていない問いがあれば拾い直す»**。
+ * これが無いと落ちるたびに Discord へ同じ質問が 2 通出て、切れている間に入った答えは
+ * 誰にも渡らないまま消える (実際に 1 つ失った)。`ask_wait` は ask_id が手元にあるときの
+ * 近道として残す。
  */
 
 const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
@@ -110,7 +122,7 @@ const TOOLS = [
     name: "ask_human",
     title: "依頼者に確認する",
     description:
-      "判断が要ることを依頼者に確認し、答えが返るまで待つ。選択肢はボタン、自由記述はフォームとして Discord に出る。答えが返るまでこの呼び出しは戻らない。まれに status:pending が返ったら、それは接続が切れただけなので同じ ask_id で ask_wait を呼び直すこと。",
+      '判断が要ることを依頼者に確認し、答えが返るまで待つ。選択肢はボタン、自由記述はフォームとして Discord に出る。答えが返るまでこの呼び出しは戻らない。status:pending が返ったら同じ ask_id で ask_wait を呼び直すこと。接続エラーで落ちた (ask_id が手元に無い) ときは、同じ session_key でこれを呼び直せばよい — question は "(再送)" の 1 語でよく、直前の問いを握り直すか、切れている間に届いた答えを返す。質問が二重に出ることはない。',
     inputSchema: {
       type: "object",
       properties: {
@@ -246,6 +258,31 @@ async function askHuman(
     );
   }
 
+  // 前の往復が切れたまま残っていないか。**新しく問いを立てる前に必ず見る。**
+  //
+  // 握りが落ちると Claude に届くのは ask_id を含まないエラーなので、Claude にできるのは
+  // これを呼び直すことだけ。素通りさせると Discord に同じ質問が 2 通出て、切れている間に
+  // 入った答えは誰にも渡らない。だから «問いを作る» のではなく «拾い直す»。
+  const stranded = await repo.findUndeliveredAsk(sessionKey);
+  if (stranded) {
+    if (stranded.answer !== null) {
+      // 切れている間に人が答えていた。作り直さず、その答えをそのまま返す。
+      await repo.markAskDelivered(stranded.askId);
+      await repo.setStatus(sessionKey, "running");
+      return textResult(
+        id,
+        JSON.stringify({
+          status: "answered",
+          ask_id: stranded.askId,
+          answer: stranded.answer,
+          note: "接続が切れている間に届いた、**直前の問い**への回答です。いま渡そうとした質問は出していません。",
+        }),
+      );
+    }
+    // まだ答えが無い。同じ問いが Discord に出たままなので、二重に出さず握り直す。
+    return holdForAnswer(id, repo, stranded.askId, sessionKey, env, token, ctx);
+  }
+
   const validated = validateAsk({
     sessionKey,
     question: args.question,
@@ -290,6 +327,7 @@ async function askHuman(
     await markDelivered(rest, where, queued.messageIds);
     await repo.addEvent(sessionKey, "progress", `${ask.askId} に回答 (預かっていた分)`);
     await repo.setStatus(sessionKey, "running");
+    await repo.markAskDelivered(ask.askId);
     return textResult(
       id,
       JSON.stringify({ status: "answered", ask_id: ask.askId, answer: queued.text }),
@@ -354,6 +392,9 @@ function holdForAnswer(
               JSON.stringify({ status: "answered", ask_id: askId, answer: ask.answer }),
             ),
           );
+          // 書き出せたことが «渡せた» の唯一の手掛かり。ここを立てないと、次の ask_human が
+          // 同じ答えを何度も返し続ける。
+          await repo.markAskDelivered(askId);
           return;
         }
         if (Date.now() >= deadline) {

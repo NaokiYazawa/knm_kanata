@@ -32,6 +32,8 @@ export type Ask = Readonly<{
   answeredAt: string | null;
   messageId: string | null;
   createdAt: string;
+  /** Claude へ «返せた» 印。NULL = 往復が途中で切れて、まだ渡せていない。 */
+  deliveredAt: string | null;
 }>;
 
 /** 溜まっていた文をまとめて 1 つの «次の指示» に畳んだもの。 */
@@ -68,6 +70,7 @@ type AskRow = {
   answered_at: string | null;
   message_id: string | null;
   created_at: string;
+  delivered_at: string | null;
 };
 
 function toSession(row: SessionRow): Session {
@@ -107,6 +110,7 @@ function toAsk(row: AskRow): Ask {
     answeredAt: row.answered_at,
     messageId: row.message_id,
     createdAt: row.created_at,
+    deliveredAt: row.delivered_at,
   };
 }
 
@@ -249,6 +253,7 @@ export class Repo {
       answeredAt: null,
       messageId: null,
       createdAt: at,
+      deliveredAt: null,
     };
   }
 
@@ -265,6 +270,37 @@ export class Repo {
     await this.db
       .prepare("UPDATE sessions SET updated_at = ? WHERE session_key = ?")
       .bind(nowIso(), sessionKey)
+      .run();
+  }
+
+  /**
+   * **まだ Claude へ返せていない、いちばん新しい質問。**
+   *
+   * 握っている SSE は落ちることがあり、そのとき Claude に届くのは **ask_id を含まない**
+   * エラー (`transport dropped mid-call`) なので `ask_wait` で拾い直せない。Claude にできるのは
+   * `ask_human` を呼び直すことだけ。それを素通りさせると、同じ質問が Discord に 2 回出て、
+   * 切れている間に入った答えは宙に浮く (実際に 1 つ失った)。
+   *
+   * **«いちばん新しい» を返すのが肝**。古い方を返すと、会話が先へ進んだ後に昔の答えが
+   * 蘇ってくる。切れた直後にはそれより新しい ask は存在しないので、新しい方で必ず当たる。
+   */
+  async findUndeliveredAsk(sessionKey: string): Promise<Ask | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT * FROM asks
+          WHERE session_key = ? AND delivered_at IS NULL
+          ORDER BY created_at DESC LIMIT 1`,
+      )
+      .bind(sessionKey)
+      .first<AskRow>();
+    return row ? toAsk(row) : null;
+  }
+
+  /** 返せた印。**Claude へ書き出せた時点で立てる** (書けたことが唯一の手掛かりなので)。 */
+  async markAskDelivered(askId: string): Promise<void> {
+    await this.db
+      .prepare("UPDATE asks SET delivered_at = ? WHERE ask_id = ? AND delivered_at IS NULL")
+      .bind(nowIso(), askId)
       .run();
   }
 
