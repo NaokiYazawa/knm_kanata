@@ -208,6 +208,10 @@ Social SDK 由来の一部イベントだけで、チャンネルの発言は今
 
 ## 5.9 プロジェクトとチャンネルとリポジトリ
 
+**既定は «1 チャンネル = 1 プロジェクト = 1 リポジトリ (モノレポ)»。** この形なら作業
+ディレクトリがリポジトリ直下のままなので、commit した `.mcp.json` と `.claude/settings.json`
+がそのまま効き、環境側に置く設定は要らない (`cloud-setup.sh` は貼らない)。
+
 - **`/claude` の行き先は 3 段で決める**: `project` の明示 → **チャンネルとの結び付け** →
   プロジェクトが 1 つだけならそれ。**«唯一だから» で勝手に選ばない場所を残す** —
   雑談チャンネルの `/claude` が本番リポジトリに飛ぶ事故を作らない。スレッドで叩かれたら
@@ -235,7 +239,7 @@ Worker のコードだけ正しくても動かない。routine と cloud environ
 | cloud environment の環境変数 | `KANATA_URL` / `KANATA_TOKEN` |
 | routine の `allowed_tools` | `mcp__kanata` と 3 つのツール名 (無いと承認待ちで固まる) |
 | Discord Developer Portal | **MESSAGE CONTENT INTENT** (無いと Gateway が close 4014 で切られる) |
-| cloud environment の Setup script | `cloud-setup.sh` (**リポジトリが 2 本以上の routine で要る**) |
+| cloud environment の Setup script | `cloud-setup.sh` (**リポジトリが 2 本以上の routine のときだけ**。モノレポなら貼らない) |
 
 どれが欠けても症状は «ask_human が呼ばれない» で同じに見える。切り分けは
 **存在しない `session_key` で `ask_human` を 1 回だけ呼ばせる** のが速い

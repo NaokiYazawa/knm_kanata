@@ -7,6 +7,7 @@ import {
   findProjectByChannel,
   isProjectsProblem,
   parseProjects,
+  repoLabels,
 } from "../domain/projects";
 import type { Env } from "../env";
 import { fireAndAnnounce } from "../session/launch";
@@ -161,6 +162,7 @@ async function handleCommand(
       // スレッドの中で叩かれたらそのスレッドを使う。スレッドの中にスレッドは作れない。
       alreadyInThread: isThreadChannelType(interaction.channel?.type),
       project: project.name,
+      repos: repoLabels(project),
       prompt: task,
       requesterId: userId,
     }),
@@ -174,6 +176,8 @@ async function startSession(input: {
   channelId: string;
   alreadyInThread: boolean;
   project: string;
+  /** 起動メッセージに出す «触れる範囲»。台帳には入れない (正本は routine の sources)。 */
+  repos: readonly string[];
   prompt: string;
   requesterId: string;
 }): Promise<void> {
@@ -192,7 +196,12 @@ async function startSession(input: {
 
   const original = await rest.editOriginalResponse(
     input.interactionToken,
-    startedMessage({ project: input.project, prompt: input.prompt, sessionKey }),
+    startedMessage({
+      project: input.project,
+      repos: input.repos,
+      prompt: input.prompt,
+      sessionKey,
+    }),
   );
 
   // 会話の置き場を決める。スレッドが作れなければ元のチャンネルへ出す (通知が消えるよりまし)。

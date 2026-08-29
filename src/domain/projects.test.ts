@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { findProject, findProjectByChannel, isProjectsProblem, parseProjects } from "./projects";
+import {
+  findProject,
+  findProjectByChannel,
+  isProjectsProblem,
+  parseProjects,
+  repoLabels,
+} from "./projects";
 
 const one = JSON.stringify([
   {
@@ -97,5 +103,39 @@ describe("チャンネルとの結び付け", () => {
       { name: "a", repos: "api", repoUrl: "u", fireUrl: "f", fireToken: "t" },
     ]);
     expect(isProjectsProblem(parseProjects(bad))).toBe(true);
+  });
+});
+
+describe("触れる範囲の見せ方", () => {
+  function one(entry: Record<string, unknown>) {
+    const parsed = parseProjects(
+      JSON.stringify([{ fireUrl: "f", fireToken: "t", name: "p", ...entry }]),
+    );
+    if (isProjectsProblem(parsed)) throw new Error(parsed.message);
+    const project = parsed[0];
+    if (!project) throw new Error("プロジェクトがありません");
+    return project;
+  }
+
+  it("リポジトリが 1 本なら repos を書かなくてよい (repoUrl から作る)", () => {
+    expect(repoLabels(one({ repoUrl: "https://github.com/NaokiYazawa/knm_kanata" }))).toEqual([
+      "NaokiYazawa/knm_kanata",
+    ]);
+    expect(repoLabels(one({ repoUrl: "https://github.com/NaokiYazawa/knm_kanata.git" }))).toEqual([
+      "NaokiYazawa/knm_kanata",
+    ]);
+  });
+
+  it("repos を書いてあればそちらを使う", () => {
+    expect(repoLabels(one({ repoUrl: "https://github.com/a/b", repos: ["a/b", "a/c"] }))).toEqual([
+      "a/b",
+      "a/c",
+    ]);
+  });
+
+  it("GitHub 以外の形でも黙って落とさない", () => {
+    expect(repoLabels(one({ repoUrl: "https://example.com/x" }))).toEqual([
+      "https://example.com/x",
+    ]);
   });
 });

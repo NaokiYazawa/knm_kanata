@@ -103,6 +103,18 @@ export function findProject(projects: readonly Project[], name: string): Project
 }
 
 /**
+ * 起動メッセージに出す «このセッションが触れる範囲»。
+ *
+ * **リポジトリが 1 本 (モノレポ) なら `repos` を書く必要は無い** — `repoUrl` から
+ * `owner/name` を作る。`repos` を書くのは 2 本以上のときだけでよい。
+ */
+export function repoLabels(project: Project): readonly string[] {
+  if (project.repos.length > 0) return project.repos;
+  const owner = /github\.com\/([^/]+\/[^/.]+)/.exec(project.repoUrl)?.[1];
+  return [owner ?? project.repoUrl];
+}
+
+/**
  * そのチャンネルに結び付いたプロジェクト。**`/claude` にプロジェクト名を書かせないための口**。
  *
  * スレッドの中で叩かれたら `channelId` はスレッドの id になるので、呼ぶ側が親チャンネルの

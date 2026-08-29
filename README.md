@@ -200,35 +200,48 @@ curl -X POST -H "Authorization: Bearer $KANATA_TOKEN" https://<worker>/gateway/r
 502 もバックグラウンド化も起きず、progress 通知も 37 回流れた。turn が増えるのは «握りの上限
 (`ASK_HOLD_MS`、既定 15 分) に達したとき» だけなので、伸ばせばさらに減る。
 
-## 1 チャンネル = 1 プロジェクト
+## 1 チャンネル = 1 プロジェクト = 1 リポジトリ
 
-プロジェクトの紐付けはこう置きます。**管理画面は要りません。**
+**リポジトリはモノレポ 1 本**を前提にしています。そうすると全部が一直線に並びます。
 
 ```
-プロジェクト ──┬── GitHub リポジトリ × N   →  routine の sources   (正本)
-               ├── routine × 1             →  fireUrl / fireToken
-               └── Discord チャンネル × 1  →  PROJECTS_JSON の channelId
+Discord チャンネル  ──  プロジェクト  ──  routine  ──  GitHub リポジトリ
+   #alpha                 alpha          trig_…        NaokiYazawa/alpha
 ```
+
+紐付けを持つのは `PROJECTS_JSON` (Worker の secret) だけです。**管理画面は要りません。**
 
 ```json
 [
   {
     "name": "alpha",
     "channelId": "1543…",
-    "repos": ["NaokiYazawa/api", "NaokiYazawa/web"],
-    "repoUrl": "https://github.com/NaokiYazawa/api",
+    "repoUrl": "https://github.com/NaokiYazawa/alpha",
     "fireUrl": "https://api.anthropic.com/v1/claude_code/routines/trig_…/fire",
     "fireToken": "sk-ant-oat01-…"
   }
 ]
 ```
 
+プロジェクトを 1 つ増やすときにやることは 3 つだけです。
+
+1. claude.ai でそのリポジトリの routine を作り、API トリガのトークンを発行する
+2. Discord にチャンネルを 1 つ作り、ID をコピーする（開発者モード → チャンネル右クリック）
+3. `PROJECTS_JSON` に 1 要素足して `wrangler secret put PROJECTS_JSON`
+
+`#alpha` で `/claude` を叩けば alpha に飛びます。スレッドの中で叩いても親チャンネルで照合します。
+
 `#alpha` で `/claude` を叩けば、プロジェクト名を書かなくても alpha に飛びます。スレッドの中で
 叩いても親チャンネルで照合します。**どこにも結び付いていない場所では黙って選ばず**、使える
 名前を返します（雑談チャンネルの `/claude` が本番リポジトリに飛ぶ事故を作らないため）。
 
-`repos` は**表示用**です。起動メッセージに「このセッションが触れる範囲」として出しますが、
-**正本は routine の `sources`** で、ここに書き足しても触れるようにはなりません。
+起動メッセージにはリポジトリが出ます（`repoUrl` から作るので、書くのは 1 行だけです）。
+これは**このセッションが触れる範囲**そのものだからです。
+
+## モノレポ前提を崩すとどうなるか
+
+以下は「1 プロジェクトに 2 本以上のリポジトリ」を入れたくなったときのための記録です。
+**モノレポで回している限り、この節は読まなくて構いません。**
 
 ### セッションが触れる範囲は `sources` が境界（実測）
 
@@ -241,7 +254,7 @@ curl -X POST -H "Authorization: Bearer $KANATA_TOKEN" https://<worker>/gateway/r
 | `mcp__github__*` | 見えるが **sources にスコープされ、他リポジトリは拒否**される |
 
 つまり「主リポジトリ 1 本だけ source に入れて、他は会話の中で clone する」は**成立しません**。
-**そのプロジェクトのリポジトリは全部 `sources` に入れてください。**
+2 本目が要るなら `sources` に入れるしかありません。そして次の問題が出ます。
 
 ### 複数リポジトリのときは setup script が要る
 
@@ -257,6 +270,8 @@ curl -X POST -H "Authorization: Bearer $KANATA_TOKEN" https://<worker>/gateway/r
 （スキルは無事でした。壊れるのは「プロジェクトルートから読む設定」だけです。）
 
 塞ぐには [`cloud-setup.sh`](./cloud-setup.sh) を cloud environment の **Setup script** に貼ります。
+**モノレポで回すなら貼る必要はありません**（貼ったままだと同じフックが 2 回走りうるので、
+使わないなら外しておくのがよいです）。
 **中身はどのプロジェクトでも同じ**なので、環境に 1 回貼れば以後は routine にリポジトリを
 並べるだけです。貼った後の実測:
 

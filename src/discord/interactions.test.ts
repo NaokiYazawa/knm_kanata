@@ -262,6 +262,35 @@ describe("/claude", () => {
     expect(seen).toEqual([]);
   });
 
+  it("起動メッセージに «触れるリポジトリ» を出す", async () => {
+    // これがこのセッションの «できることの境界» なので、黙って隠さない。
+    const bodies: unknown[] = [];
+    replies.set(ORIGINAL, { status: 200, body: { id: "m3", channel_id: "ch-demo" } });
+    firedOk();
+    replies.set("https://discord.com/api/v10/channels/ch-demo/messages", {
+      status: 200,
+      body: { id: "n3" },
+    });
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const reply = replies.get(url);
+      if (!reply) throw new Error(`予定に無い宛先へ fetch しました: ${url}`);
+      seen.push(url);
+      if (url === ORIGINAL) bodies.push(JSON.parse(String(init?.body ?? "{}")));
+      return new Response(JSON.stringify(reply.body), {
+        status: reply.status,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    await handleInteraction(command("リポジトリを見せて", "ch-demo", "owner-1", null), env, ctx);
+    await settle();
+
+    const fields = (bodies[0] as { embeds: { fields: { name: string; value: string }[] }[] })
+      .embeds[0]?.fields;
+    expect(fields?.find((f) => f.name === "リポジトリ")?.value).toBe("example/api\nexample/web");
+  });
+
   it("持ち主以外は何もできず、自分の ID を返してもらえる", async () => {
     const response = await handleInteraction(command("なにか", "th-x", "someone-else"), env, ctx);
     const body = (await response.json()) as { data: { content: string; flags: number } };
