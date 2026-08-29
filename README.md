@@ -3,8 +3,7 @@
 Discord から、リモートで走る Claude Code に指示を出すための個人用ブリッジ。
 Cloudflare Workers + D1 だけで動く。手元のマシンも Raspberry Pi も要らない。
 
-指示を投げると Anthropic のクラウド VM で Claude Code のセッションが立ち上がり、
-判断が要るところで Discord にボタンとフォームで聞きに来る。答えるとその場で続きが走る。
+指示を投げると Anthropic のクラウド VM で Claude Code のセッションが立ち上がり、判断が要るところで Discord にボタンとフォームで聞きに来る。答えるとその場で続きが走る。
 ターミナルの `AskUserQuestion` と同じ体験を、スマホから受け取れる。
 
 ```txt

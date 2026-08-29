@@ -12,7 +12,7 @@ Worker 自身が MCP サーバー (`/mcp`) になり、対象リポジトリの 
 ```txt
 /claude ──▶ Worker ──POST routines/{trig}/fire──▶ Anthropic-managed VM
                 ▲                                      │
-                └──── ask_human / report (MCP) ◀────────┘
+                └──── ask_human / report (MCP) ◀───────┘
 ```
 
 `claude -p` を自前で回さないのは課金の都合。2026-06-15 以降 `claude -p` と Agent SDK は

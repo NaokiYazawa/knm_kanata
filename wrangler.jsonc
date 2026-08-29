@@ -5,12 +5,11 @@
   "compatibility_date": "2026-08-01",
   "observability": { "enabled": true },
 
-  // `wrangler d1 create kanata` の出力の database_id をここに貼る。
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "kanata",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_name": "kanata-database-prod",
+      "database_id": "4cd83b57-23a7-4cbc-8e3f-7d403dff4455",
       "migrations_dir": "migrations"
     }
   ]
