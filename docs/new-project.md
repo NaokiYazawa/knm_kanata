@@ -5,7 +5,7 @@ kanata 本体 (Worker・D1・Discord アプリ・cloud environment) が既に動
 
 初回のセットアップは [README](../README.md) を見る。
 
-```
+```txt
 Discord チャンネル  ──  プロジェクト  ──  routine  ──  GitHub リポジトリ
    #alpha                 alpha          trig_…        NaokiYazawa/alpha
 ```
@@ -21,7 +21,7 @@ Discord チャンネル  ──  プロジェクト  ──  routine  ──  Gi
 スコープされる)、`mcp__github__*` も sources 外は拒否される。**後から会話の中で足せない。**
 
 | | モノレポ (1 本) | 複数リポジトリ |
-|---|---|---|
+| --- | --- | --- |
 | 作業ディレクトリ | リポジトリ直下 | **`/home/user`** |
 | `.mcp.json` (kanata の配線) | 効く | 効かない → `cloud-setup.sh` が要る |
 | `.claude/settings.json` (フック) | 効く | 同上 |
@@ -43,7 +43,7 @@ git push
 ```
 
 | ファイル | 役目 |
-|---|---|
+| --- | --- |
 | `.mcp.json` | Worker を MCP サーバーとして繋ぐ。**project スコープは確認プロンプト無しで読まれる** |
 | `.claude/settings.json` | フックの登録 (`PreToolUse` / `Stop` / `SessionEnd`) |
 | `.claude/hooks/kanata-hook.sh` | コンテキスト残量の通報と、完了通知の保険 |
@@ -98,12 +98,10 @@ routine は**承認する人がいない状態で自律実行される**ので�
 ## 4. cloud environment (複数リポジトリのときだけ)
 
 環境の **Setup script** に [`cloud-setup.sh`](../cloud-setup.sh) を貼る。
-中身はどのプロジェクトでも同じなので、**環境に 1 回貼れば以後は routine にリポジトリを
-並べるだけ**。
+中身はどのプロジェクトでも同じなので、**環境に 1 回貼れば以後は routine にリポジトリを並べるだけ**。
 
-**モノレポなら貼らない。** 貼ったままだと `/home/user/.claude/settings.json` が
-ユーザースコープの設定としても読まれ、同じフックが 2 回走りうる (実害は同じ値を 2 回書く
-だけだが、無駄)。
+**モノレポなら貼らない。**
+貼ったままだと `/home/user/.claude/settings.json` がユーザースコープの設定としても読まれ、同じフックが 2 回走りうる (実害は同じ値を 2 回書くだけだが、無駄)。
 
 環境変数と許可ドメインは全プロジェクト共通で、初回に入れたものがそのまま効く
 (`KANATA_URL` / `KANATA_TOKEN` / `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0` / Worker のホスト名)。
@@ -124,10 +122,20 @@ routine は**承認する人がいない状態で自律実行される**ので�
 ]
 ```
 
+**`.env.local` の `PROJECTS_JSON` が正本。** ここに 1 要素足してから送る:
+
 ```bash
-wrangler secret put PROJECTS_JSON --profile linto   # 既存の配列に足した全文を貼る
-pnpm run commands:register                          # /claude の project 選択肢を更新 (任意)
+pnpm run projects:push -- --profile linto   # .env.local を検証して secret へ送る
+pnpm run commands:register                  # /claude の project 選択肢を更新 (任意)
 ```
+
+**secret は書き込み専用で読み出せない**（`wrangler secret list` は名前しか返さない）。そして
+`wrangler secret put` は**値を丸ごと置き換える**ので、手元に全文が無いと既存のプロジェクトが
+消える。消えて痛いのは `fireToken` で、これも「一度しか表示されない」ため、失うと web UI で
+発行し直す（＝前のを失効させる）しかない。
+
+`projects:push` は `.env.local` **だけ**を読み、本体と同じ検証を通してから送る。壊れた値を
+push すると `/claude` が丸ごと止まるので、その前に落とす。
 
 複数リポジトリなら `"repos": ["NaokiYazawa/api", "NaokiYazawa/web"]` を足す
 (起動メッセージに出す**表示用**。正本は routine の `sources` で、ここに書いても触れるようには
@@ -139,12 +147,12 @@ pnpm run commands:register                          # /claude の project 選択
 
 `#alpha` で:
 
-```
+```txt
 /claude task:「ping」
 ```
 
 | 見えるべきもの | 見えなければ |
-|---|---|
+| --- | --- |
 | 🚀 起動 (プロジェクト名とリポジトリが出る) | `PROJECTS_JSON` の `channelId` を確認 |
 | ▶️ 実行中 (セッションのリンク) | routine の fireUrl / fireToken |
 | Claude の返事 + 残量バー | 下の表へ |
@@ -156,7 +164,7 @@ pnpm run commands:register                          # /claude の project 選択
 ## 詰まったときの見どころ
 
 | 症状 | 原因 |
-|---|---|
+| --- | --- |
 | 「このチャンネルに結び付いたプロジェクトがありません」 | `channelId` が違う / 入れ忘れ |
 | 起動はするが Claude が何も言わない | `allowed_tools` に `mcp__kanata` が無く承認待ち |
 | `AUTH_HEADER_REJECTED (HTTP 403)` | **トークンではなく許可ドメイン**。`request blocked: no rule or allowlist` の方を読む |

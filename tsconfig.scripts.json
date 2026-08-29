@@ -1,0 +1,13 @@
+{
+  // scripts/ は Node で走るので Node の型が要る。**src と混ぜない** —
+  // @types/node と workers-types は同じグローバル (URLSearchParams など) を別々に宣言しており、
+  // 1 つの tsconfig に同居させると衝突する。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "lib": ["ES2023"]
+  },
+  // scripts が import した src のファイルは TS が勝手に辿る。ここで src を丸ごと含めると
+  // Worker 側 (D1Database など) まで引きずり込んで Node の型と噛み合わなくなる。
+  "include": ["scripts/**/*.ts"]
+}

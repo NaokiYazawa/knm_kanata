@@ -228,7 +228,10 @@ Discord チャンネル  ──  プロジェクト  ──  routine  ──  Gi
 
 1. claude.ai でそのリポジトリの routine を作り、API トリガのトークンを発行する
 2. Discord にチャンネルを 1 つ作り、ID をコピーする（開発者モード → チャンネル右クリック）
-3. `PROJECTS_JSON` に 1 要素足して `wrangler secret put PROJECTS_JSON`
+3. `.env.local` の `PROJECTS_JSON` に 1 要素足して `pnpm run projects:push -- --profile linto`
+
+`.env.local` が `PROJECTS_JSON` の**正本**です。secret は読み出せず、`wrangler secret put` は
+値を丸ごと置き換えるので、手元に全文が無いと既存のプロジェクトが消えます。
 
 `#alpha` で `/claude` を叩けば alpha に飛びます。スレッドの中で叩いても親チャンネルで照合します。
 
