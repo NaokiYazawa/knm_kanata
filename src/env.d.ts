@@ -1,6 +1,12 @@
 export type Env = {
   DB: D1Database;
 
+  /**
+   * 実装計画の本文の置き場。D1 ではなく R2 なのは、1 ファイルが 40KB を超え、
+   * D1 の «SQL 文 100KB» の制限と綱渡りになるため (計画は 1 件 200KB 超・実測)。
+   */
+  PLANS: R2Bucket;
+
   /** Discord Gateway への常時接続を持つ DO。`idFromName("main")` の 1 つだけを使う。 */
   GATEWAY: DurableObjectNamespace;
 

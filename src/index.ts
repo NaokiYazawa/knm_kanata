@@ -6,6 +6,7 @@ import { gatewayStub } from "./gateway/gateway.do";
 import { handleContextHook } from "./hooks/context";
 import { handleSessionEndHook } from "./hooks/session-end";
 import { handleMcp } from "./mcp/server";
+import { handlePlanFinish, handlePlanUpload, handlePlanView } from "./plans/routes";
 import { sweepStuckSessions } from "./session/sweep";
 
 /**
@@ -66,6 +67,33 @@ app.post("/hooks/context", async (c) => {
   if (!bearerOk(c)) return c.text("unauthorized", 401);
   return handleContextHook(c.req.raw, c.env);
 });
+
+/**
+ * 実装計画の置き場。**置くのは Bearer、読むのは URL そのものが鍵**。
+ *
+ * 読む側にゲートを掛けないのは利用者判断 (推測不能な URL で十分)。`plan_id` は 128bit で、
+ * 総当たりは成立しない。URL が漏れる経路は `plans/routes.ts` のヘッダで塞いである。
+ *
+ * 本文は MCP ツールではなく素の HTTP で受ける。**ツールの引数に載せると 200KB 超の計画を
+ * Claude が丸ごと再出力することになる**ため (`plans/routes.ts` の why)。
+ */
+app.put("/plans/:slug/:path{.+}", async (c) => {
+  if (!bearerOk(c)) return c.text("unauthorized", 401);
+  return handlePlanUpload(c.req.raw, c.env, c.req.param("slug"), c.req.param("path"));
+});
+
+app.post("/plans/:slug/finish", async (c) => {
+  if (!bearerOk(c)) return c.text("unauthorized", 401);
+  return handlePlanFinish(c.req.raw, c.env, c.req.param("slug"));
+});
+
+// 末尾の `/` を必ず付ける。**無いと計画の中の相対リンク (`./phase-01.md`) が
+// `/p/phase-01.md` に解決されて全部 404 になる。**
+app.get("/p/:planId{[0-9a-f]{32}}", (c) => c.redirect(`/p/${c.req.param("planId")}/`, 301));
+
+app.get("/p/:planId{[0-9a-f]{32}}/:path{.*}", async (c) =>
+  handlePlanView(c.req.raw, c.env, c.req.param("planId"), c.req.param("path")),
+);
 
 /**
  * Gateway の様子見と、`fatal` からの復帰。

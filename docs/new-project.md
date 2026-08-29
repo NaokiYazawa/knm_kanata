@@ -47,6 +47,10 @@ git push
 | `.mcp.json` | Worker を MCP サーバーとして繋ぐ。**project スコープは確認プロンプト無しで読まれる** |
 | `.claude/settings.json` | フックの登録 (`PreToolUse` / `Stop` / `SessionEnd`) |
 | `.claude/hooks/kanata-hook.sh` | コンテキスト残量の通報と、完了通知の保険 |
+| `.claude/scripts/publish-plan.sh` | 実装計画を Worker へ置いて、読む URL を返す ([docs/plans.md](./plans.md)) |
+
+実装計画を使うなら `.gitignore` に **`/plans/`** も足す (使い捨ての計画が commit に混ざると、
+実装とズレた文書が正史として残る)。
 
 **リポジトリは public でも private でもよい** (clone は Claude の GitHub 連携が行う)。
 `.claude/skills/<名前>/SKILL.md` を置けばクラウドセッションでそのまま使える。

@@ -7,3 +7,7 @@ dist/
 .DS_Store
 .secrets/
 projects.json
+
+# 実装計画は GitHub に置かず、Worker から配る (docs/plans.md)。
+# **先頭の / を落とさない** — `plans/` と書くと `src/plans/` (実装そのもの) まで無視される。
+/plans/

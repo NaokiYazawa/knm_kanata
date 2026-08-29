@@ -30,6 +30,14 @@ describe("サーバーが名乗る使い方 (initialize の instructions)", () =
     }
   });
 
+  it("長い文書の出し方を名指ししている", () => {
+    // ここが欠けると、Claude は 200KB の計画を «ask_human の question に貼る» か
+    // «Discord に 120 通に割って出す» のどちらかをやる。スクリプトの置き場は
+    // repo-template/.claude/scripts/publish-plan.sh と対 (CLAUDE.md §4)。
+    expect(SERVER_INSTRUCTIONS).toContain(".claude/scripts/publish-plan.sh");
+    expect(SERVER_INSTRUCTIONS).toContain("?raw=1");
+  });
+
   it("routine 側の本文と食い違わない (どちらを読んでも同じ手順になる)", () => {
     // ROUTINE_PROMPT は貼り直すまで古いままになりうる。**矛盾させない**ことだけを守る。
     for (const phrase of ["ask_wait", "(再送)"]) {

@@ -36,3 +36,18 @@ export function isSessionKey(value: string): boolean {
 export function newAskId(): string {
   return `ask_${randomHex(8)}`;
 }
+
+/**
+ * 実装計画の識別子。**これがそのまま公開 URL (`/p/<plan_id>/`) の鍵になる**ので、
+ * 総当たりが成立しない長さ (128bit) を取る。`KANATA-` のような接頭辞は付けない —
+ * 転写ログから拾う用途が無く、URL に載る文字を増やす理由が無い。
+ */
+export function newPlanId(): string {
+  return randomHex(16);
+}
+
+export const PLAN_ID_RE = /^[0-9a-f]{32}$/;
+
+export function isPlanId(value: string): boolean {
+  return PLAN_ID_RE.test(value);
+}

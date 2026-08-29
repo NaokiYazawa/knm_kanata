@@ -1,3 +1,4 @@
+import { newPlanId } from "../domain/ids";
 import { nowIso } from "../domain/time";
 
 /**
@@ -56,6 +57,18 @@ export type QueuedBatch = Readonly<{
   ids: readonly number[];
 }>;
 
+/** 実装計画 1 件。本文は R2 にあり、ここにあるのは «どこに何があるか» だけ。 */
+export type Plan = Readonly<{
+  /** 32hex。**そのまま公開 URL の鍵になる** (`/p/<plan_id>/`)。 */
+  planId: string;
+  /** `thread:<id>` か `session:<key>`。同じ場所の同じ slug は同じ計画。 */
+  scope: string;
+  slug: string;
+  sessionKey: string;
+  createdAt: string;
+  updatedAt: string;
+}>;
+
 type SessionRow = {
   session_key: string;
   project: string;
@@ -71,6 +84,15 @@ type SessionRow = {
   ctx_used_tokens: number | null;
   ctx_output_tokens: number | null;
   ctx_at: string | null;
+};
+
+type PlanRow = {
+  plan_id: string;
+  scope: string;
+  slug: string;
+  session_key: string;
+  created_at: string;
+  updated_at: string;
 };
 
 type AskRow = {
@@ -102,6 +124,17 @@ function toSession(row: SessionRow): Session {
     contextUsedTokens: row.ctx_used_tokens,
     contextOutputTokens: row.ctx_output_tokens,
     contextAt: row.ctx_at,
+  };
+}
+
+function toPlan(row: PlanRow): Plan {
+  return {
+    planId: row.plan_id,
+    scope: row.scope,
+    slug: row.slug,
+    sessionKey: row.session_key,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 
@@ -449,6 +482,62 @@ export class Repo {
     await this.db
       .prepare(`UPDATE inbox SET taken_at = ? WHERE id IN (${placeholders}) AND taken_at IS NULL`)
       .bind(nowIso(), ...ids)
+      .run();
+  }
+
+  /* ---- plans ---- */
+
+  /**
+   * 計画の台帳を引くか、無ければ作る。**呼ぶ側は `plan_id` を知らない** —
+   * 知っているのは «どのスレッドの、何という名前か» だけで、id の発行と再利用はここだけの話。
+   *
+   * これが «引くか作る» でないと、同じ計画を直して出し直すたびに URL が変わり、
+   * スレッドに貼ったリンクが古い方を指し続ける。
+   */
+  async upsertPlan(input: { scope: string; slug: string; sessionKey: string }): Promise<Plan> {
+    const at = nowIso();
+    const existing = await this.db
+      .prepare("SELECT * FROM plans WHERE scope = ? AND slug = ?")
+      .bind(input.scope, input.slug)
+      .first<PlanRow>();
+    if (existing) {
+      await this.db
+        .prepare("UPDATE plans SET session_key = ?, updated_at = ? WHERE plan_id = ?")
+        .bind(input.sessionKey, at, existing.plan_id)
+        .run();
+      return { ...toPlan(existing), sessionKey: input.sessionKey, updatedAt: at };
+    }
+    const planId = newPlanId();
+    await this.db
+      .prepare(
+        `INSERT INTO plans (plan_id, scope, slug, session_key, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(planId, input.scope, input.slug, input.sessionKey, at, at)
+      .run();
+    return {
+      planId,
+      scope: input.scope,
+      slug: input.slug,
+      sessionKey: input.sessionKey,
+      createdAt: at,
+      updatedAt: at,
+    };
+  }
+
+  async getPlan(planId: string): Promise<Plan | null> {
+    const row = await this.db
+      .prepare("SELECT * FROM plans WHERE plan_id = ?")
+      .bind(planId)
+      .first<PlanRow>();
+    return row ? toPlan(row) : null;
+  }
+
+  /** 置き終わりの印。読む側が «最終更新» として出す。 */
+  async touchPlan(planId: string): Promise<void> {
+    await this.db
+      .prepare("UPDATE plans SET updated_at = ? WHERE plan_id = ?")
+      .bind(nowIso(), planId)
       .run();
   }
 

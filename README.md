@@ -57,6 +57,7 @@ Cloudflare 側は Workers Paid の $5/月 に収まる (D1・Worker とも個人
 pnpm install
 wrangler d1 create kanata          # 出力の database_id を wrangler.jsonc に貼る
 pnpm run db:migrate                # 本番の D1 にスキーマを流す
+wrangler r2 bucket create kanata-plans-prod   # 実装計画の置き場 (docs/plans.md)
 ```
 
 secret を入れる (`PROJECTS_JSON` は 3 で作った routine が要るので後回しでよい):
@@ -151,6 +152,11 @@ routine の編集画面 → 環境の設定で:
 | `.mcp.json` | Worker を MCP サーバーとして繋ぐ。cloud session は **project スコープの `.mcp.json` を確認プロンプト無しで読み込む** |
 | `.claude/settings.json` | hook の登録（`PreToolUse` / `Stop` / `SessionEnd`） |
 | `.claude/hooks/kanata-hook.sh` | コンテキスト残量の通報と、完了通知の**保険** |
+| `.claude/scripts/publish-plan.sh` | 実装計画を Worker へ置いて、読む URL を返す（[docs/plans.md](./docs/plans.md)） |
+
+実装計画を使うなら、対象リポジトリの `.gitignore` に **`/plans/`** も足しておく
+（先頭の `/` を落とすと `src/plans/` のような同名のディレクトリまで巻き込む）
+（使い捨ての計画が commit に混ざると、実装とズレた文書が正史として残る）。
 
 ```bash
 cp -r /path/to/knm_kanata/repo-template/. /path/to/myapp/
@@ -368,6 +374,32 @@ synced                                 ← synced plugins も届いている
 
 なお **「Claude が説明文を見て自分で選ぶ」経路はまだ実測していません**（この確認では名指し
 しました）。仕様上は `description` で自動選択されます。
+
+## 実装計画は GitHub に入れず、URL で読む
+
+実装計画は使い捨てで、実装が終われば最終的なコードとズレる。commit すると **嘘が書いてある
+文書が正史として残り続ける**ので、リポジトリには入れない。かといって Discord にも出せない —
+計画は «相互リンクした複数の markdown» で、実測で 7 ファイル / 231,647 バイトある。1 通
+2,000 字のメッセージでは 120 通に割れ、`.md` を添付しても素のテキストになって**表が読めない**。
+
+そこで Worker が配る。
+
+```sh
+.claude/scripts/publish-plan.sh KANATA-0123456789abcdef plans/github-link
+# → https://kanata.linto-dev.workers.dev/p/5aa03867a14bae849ed671d4c5fb1ba5/
+```
+
+出た URL を `ask_human` に貼る。依頼者はスマホからそれを開いて読み、スレッドに「ここを直して」
+と書く。**同じ名前で出し直しても URL は変わらない**ので、貼り直しは要らない。
+
+- 置き場は R2 (10GB まで無料)、台帳は D1。**環境に足す設定は 1 つも無い** —
+  `KANATA_URL` / `KANATA_TOKEN` と許可ドメインは既にあるものをそのまま使う
+- 本文は **MCP ツールではなく `curl`** で送る。ツールの引数に載せると 231KB を Claude が
+  再出力することになるため。Claude が読むのは URL の 1 行だけ
+- `/p/<32hex>/` の 32hex がそのまま鍵。ログインは挟まないので、**URL が外へ出ていく口**を
+  ヘッダで塞いである (`Referrer-Policy: no-referrer` ほか)
+
+詳しくは [docs/plans.md](./docs/plans.md)。
 
 ## コンテキストの残量
 

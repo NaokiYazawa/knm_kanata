@@ -43,6 +43,20 @@ export const SERVER_INSTRUCTIONS = `kanata は Discord にいる依頼者との�
   答えを返します。Discord に同じ質問が 2 回出ることはありません
 - \`status: "closed"\` / \`"superseded"\` … そのセッションはもう誰も見ていません。
   **kanata のツールをこれ以上呼ばず、作業を終えてください。** 返しても誰にも届きません
+
+## 長い文書は Discord に貼らない
+
+実装計画のような長い markdown は Discord に入りません (1 通 2,000 字)。リポジトリに
+\`.claude/scripts/publish-plan.sh\` があれば、\`plans/<名前>/\` に書いてから
+
+    .claude/scripts/publish-plan.sh <session_key> plans/<名前>
+
+を実行し、**返ってきた URL の 1 行だけ**を \`ask_human\` の \`question\` に貼ってください。
+
+- **本文をツールの引数に載せないでください。** 計画は 200KB を超えます (そのまま再出力する
+  ことになります)。スクリプトは中身をそのまま送るので、あなたが書き写す必要はありません
+- 同じ名前で出し直すと **同じ URL に上書き**されます。リンクを貼り直す必要はありません
+- \`plans/\` は commit されません。原文が要るときは URL に \`?raw=1\` を付けて取り直せます
 `;
 
 /**

@@ -1,7 +1,7 @@
 # CLAUDE.md — knm_kanata の設計・実装ルール
 
 Discord から **リモートの Claude Code (Claude Code on the web)** を回すための個人用ブリッジ。
-Cloudflare Workers + D1 だけで動く。
+Cloudflare Workers + D1 で動く (実装計画の本文だけ R2)。
 
 ## 1. この作りが «なぜこの形か»
 
@@ -55,6 +55,9 @@ cloud session は **サブスク席の枠のまま** なので、こちらを使
 | `mcp/server.ts` のツール名 | `ROUTINE_PROMPT` が名指ししている `mcp__kanata__*` |
 | `domain/gateway.ts` の `GATEWAY_INTENTS` | Developer Portal の Privileged Gateway Intents |
 | `wrangler.jsonc` の `durable_objects` / `migrations` | `index.ts` の `export { DiscordGatewayDO }` |
+| `domain/prompt.ts` の `SERVER_INSTRUCTIONS` が名指しする publish-plan.sh | `repo-template/.claude/scripts/publish-plan.sh` の置き場 |
+| `index.ts` の `/plans/*` `/p/*` のパス | 同じスクリプトが叩く URL |
+| `domain/plans.ts` のパスの規則 | 同じスクリプトが送るファイルの選び方 |
 
 ## 5. 待ちにトークンを使わせない (握り続ける)
 
@@ -290,6 +293,43 @@ Social SDK 由来の一部イベントだけで、チャンネルの発言は今
 **テストのプロジェクトは 2 つ以上にしておく。** 1 つだと «唯一だから選ばれた» に守られて、
 チャンネルとの結び付けが壊れていても気付けない (`vitest.config.ts` に理由を書いてある)。
 
+## 5.10 実装計画はリポジトリに入れず、URL で配る
+
+**実装計画は使い捨て**で、実装が終われば最終的なコードとズレる。commit すると «嘘が書いて
+ある文書» が正史として残り続けるので、対象リポジトリの `.gitignore` に `plans/` を入れる。
+かといって Discord には出せない — 計画は «相互リンクした複数の markdown» で、実測で
+7 ファイル / 231,647 バイト。1 通 2,000 字では 120 通に割れ、`.md` を添付しても素の
+テキストになって**表が読めない**。
+
+だから Worker が配る (`plans/routes.ts`、手順は [docs/plans.md](./docs/plans.md))。守ること:
+
+- **本文を MCP ツールの引数に載せない。** 載せた瞬間、231KB を Claude が再出力することに
+  なる。置く口はツールではなく素の HTTP で、`publish-plan.sh` が `curl` で送る
+  (`kanata-hook.sh` と同じ流儀)。Claude が読むのは返ってくる URL の 1 行だけ
+- **`§6` の表を増やさない。** これがこの置き場を選んだ理由。`KANATA_URL` / `KANATA_TOKEN` と
+  許可ドメインは既にある。gist なら GitHub のトークン、`wrangler` 直叩きなら Cloudflare の
+  API トークンが増え、欠けたときの症状は例によって «計画が出てこない» で同じに見える
+- **どの計画かは «スレッド × 名前» で決まる** (`domain/plans.ts` の `planScope`)。
+  セッションが落ちて `§5.5` の restart で `session_key` が変わっても、同じスレッドの同じ
+  名前なら同じ URL に上書きされる。ここが `session_key` だと、直すたびに URL が変わって
+  スレッドに貼ったリンクが古い方を指し続ける
+- **`plan_id` は «秘密» ではなく «その 1 文書を開ける鍵»。** URL に載る以上ログにも残る。
+  `§3` が禁じているのは `PROJECTS_JSON` の fire トークン (爆風がアカウントの外へ出る
+  API 資格情報) で、こちらは D1 に平文で置く。ハッシュだけ持つと上書きのたびに URL が
+  変わり、上の «リンクが変わらない» を失う。取り消しは R2 のオブジェクトを消すこと
+- **鍵が URL である以上、URL が外へ出る口を塞ぐ。** `Referrer-Policy: no-referrer` /
+  `X-Robots-Tag: noindex` / `Cache-Control: private, no-store` / `CSP: default-src 'none'`
+- **生 HTML は必ずエスケープする** (`domain/markdown.ts`)。計画には `<URL>` `<string>`
+  `<script>` のような山括弧を含む地の文がある (実測で 40 箇所以上)。素通しにすると
+  ブラウザが飲み込んで **本文がそこだけ消える** — 読み手には «なぜか説明が抜けている» に
+  しか見えない、いちばん質の悪い壊れ方
+- **見出しの id は GitHub と同じ slug**、**相対リンクは書き換えない**。計画は
+  `[§3.1](#31-キーが-confluence-と違う)` と `./phase-01-….md` で自分を指しているので、
+  どちらかを勝手に直すとリンクが死ぬ。slug の «半角 `-` は残すが `—` は消す» は
+  `github-slugger` と突き合わせて決めた (`markdown.test.ts` が値で守る)
+- **本文は D1 ではなく R2。** 1 ファイルが 40KB を超え、D1 の «SQL 文 100KB» と綱渡りに
+  なる。D1 に置くのは台帳 (どのスレッドのどの名前がどの `plan_id` か) だけ
+
 ## 6. routine 側の設定は «コードの外にある前提»
 
 Worker のコードだけ正しくても動かない。routine と cloud environment に次が要る:
@@ -301,7 +341,7 @@ Worker のコードだけ正しくても動かない。routine と cloud environ
 | 同上 | `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0` (無いと 2 分で背後へ回る) |
 | 同上 | `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT` (無いと無音 5 分で abort。`ASK_HOLD_MS` より大きく) |
 | routine が向いている環境 | **全プロジェクトで同じものを使う** (環境変数と許可ドメインは環境に付く) |
-| routine の `allowed_tools` | `mcp__kanata` と 3 つのツール名 (無いと承認待ちで固まる) |
+| routine の `allowed_tools` | `mcp__kanata` と 3 つのツール名 + `Bash` (無いと承認待ちで固まる。計画の publish と push に要る) |
 | Discord Developer Portal | **MESSAGE CONTENT INTENT** (無いと Gateway が close 4014 で切られる) |
 | 手元の `projects.json` | 本番の secret `PROJECTS_JSON` (**読み出せないので手元が正本**。`projects:push` で送る) |
 | routine の API トークン | `projects.json` の `fireToken` (**発行し直したら送り直す**。`projects:push` が通るか確かめる) |
