@@ -19,6 +19,10 @@ export type Session = Readonly<{
   ccSessionUrl: string | null;
   createdAt: string;
   updatedAt: string;
+  /** hook が転写ログから拾ってきたコンテキスト使用量。まだ 1 度も来ていなければ null。 */
+  contextUsedTokens: number | null;
+  contextOutputTokens: number | null;
+  contextAt: string | null;
 }>;
 
 export type Ask = Readonly<{
@@ -57,6 +61,9 @@ type SessionRow = {
   cc_session_url: string | null;
   created_at: string;
   updated_at: string;
+  ctx_used_tokens: number | null;
+  ctx_output_tokens: number | null;
+  ctx_at: string | null;
 };
 
 type AskRow = {
@@ -86,6 +93,9 @@ function toSession(row: SessionRow): Session {
     ccSessionUrl: row.cc_session_url,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    contextUsedTokens: row.ctx_used_tokens,
+    contextOutputTokens: row.ctx_output_tokens,
+    contextAt: row.ctx_at,
   };
 }
 
@@ -155,6 +165,9 @@ export class Repo {
       ccSessionUrl: null,
       createdAt: at,
       updatedAt: at,
+      contextUsedTokens: null,
+      contextOutputTokens: null,
+      contextAt: at,
     };
   }
 
@@ -263,6 +276,27 @@ export class Repo {
       .bind(askId)
       .first<AskRow>();
     return row ? toAsk(row) : null;
+  }
+
+  /**
+   * hook が拾ってきたコンテキスト使用量を記録する。
+   *
+   * **`updated_at` は触らない。** あれは «握りが生きている» の印で、これは «Claude が息を
+   * している» の印。混ぜると、Stop hook が動いた (= ターンが終わった = もう握っていない)
+   * セッションを「まだ待っている」と誤判定して、死んだ質問へ回答を書き込むことになる。
+   */
+  async saveContextUsage(
+    sessionKey: string,
+    usage: { usedTokens: number; outputTokens: number },
+  ): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE sessions SET ctx_used_tokens = ?, ctx_output_tokens = ?, ctx_at = ?
+          WHERE session_key = ?`,
+      )
+      .bind(usage.usedTokens, usage.outputTokens, nowIso(), sessionKey)
+      .run();
+    return (result.meta?.changes ?? 0) > 0;
   }
 
   /** 握っている間の生存の印。**これが止まったセッションは死んだものとして扱う**。 */

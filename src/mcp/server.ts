@@ -3,6 +3,7 @@ import { askAnsweredMessage, askMessage, reportMessage } from "../discord/compon
 import { markDelivered } from "../discord/inbound";
 import { DiscordRest } from "../discord/rest";
 import { isAskProblem, validateAsk } from "../domain/ask";
+import { contextLine, contextWindowTokens } from "../domain/context";
 import { newAskId } from "../domain/ids";
 import type { Env } from "../env";
 
@@ -240,6 +241,18 @@ function target(session: Session): string {
   return session.threadId ?? session.channelId;
 }
 
+/**
+ * この発言に添える «残量» の 1 行。値が 1 度も届いていなければ null (何も添えない)。
+ * 数字は hook が転写ログから拾ってきたもので、`PreToolUse` がこの呼び出しの直前に更新している。
+ */
+function gauge(session: Session, env: Env): string | null {
+  if (session.contextUsedTokens === null) return null;
+  return contextLine(
+    { usedTokens: session.contextUsedTokens, outputTokens: session.contextOutputTokens ?? 0 },
+    contextWindowTokens(env.CONTEXT_WINDOW_TOKENS),
+  );
+}
+
 async function askHuman(
   id: JsonRpcId,
   args: Record<string, unknown>,
@@ -300,7 +313,7 @@ async function askHuman(
   });
 
   const rest = new DiscordRest(env.DISCORD_BOT_TOKEN, env.DISCORD_APPLICATION_ID);
-  const posted = await rest.postMessage(target(session), askMessage(ask));
+  const posted = await rest.postMessage(target(session), askMessage(ask, gauge(session, env)));
   if (!posted.ok) {
     // 出せていないなら «待て» と言っても永久に答えは来ない。すぐ理由を返して Claude に判断させる。
     await repo.addEvent(sessionKey, "error", `質問を出せませんでした: ${posted.detail}`);
@@ -465,7 +478,10 @@ async function report(id: JsonRpcId, args: Record<string, unknown>, env: Env): P
   if (kind === "done") await repo.setStatus(sessionKey, "done");
 
   const rest = new DiscordRest(env.DISCORD_BOT_TOKEN, env.DISCORD_APPLICATION_ID);
-  const posted = await rest.postMessage(target(session), reportMessage(kind, text));
+  const posted = await rest.postMessage(
+    target(session),
+    reportMessage(kind, text, gauge(session, env)),
+  );
   if (!posted.ok) {
     return textResult(id, `記録はしましたが Discord へ出せませんでした (${posted.status})。`);
   }

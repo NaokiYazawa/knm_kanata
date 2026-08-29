@@ -1,11 +1,34 @@
 {
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__kanata__ask_human|mcp__kanata__report",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/kanata-hook.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/kanata-stop.sh",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/kanata-hook.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/kanata-hook.sh",
             "timeout": 30
           }
         ]

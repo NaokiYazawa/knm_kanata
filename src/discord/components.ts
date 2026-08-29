@@ -26,11 +26,28 @@ function buttonRows(components: unknown[]): unknown[] {
 const MAX_CONTENT = 2000;
 
 /**
+ * Claude の発言の末尾にコンテキストの残量を添える。
+ *
+ * **ここに出すのは «次に何を言うか決めるまさにその場» だから**。別の場所に置くと見に行く手間が
+ * 要り、見に行かなければ «気付いたら圧縮されていた» になる。過去のメッセージは当時の値のまま
+ * 残るので、伸び方もそのまま履歴として読める。
+ *
+ * 上限に収まらないときは **本文ではなくこの行を落とす** (本題が削れる方が困る)。
+ */
+function withContext(content: string, contextLine: string | null): string {
+  if (!contextLine) return content.slice(0, MAX_CONTENT);
+  const tail = `\n${contextLine}`;
+  return content.length + tail.length <= MAX_CONTENT
+    ? content + tail
+    : content.slice(0, MAX_CONTENT);
+}
+
+/**
  * Claude の問いかけ。**見出しも枠も付けない** — ターミナルの Claude Code がそうであるように、
  * ただ本人が喋っているように見せる。押せる口があることはボタンが示すので、
  * 「確認したいことがあります」と宣言する必要は無い。
  */
-export function askMessage(ask: Ask): MessagePayload {
+export function askMessage(ask: Ask, contextLine: string | null = null): MessagePayload {
   const buttons: unknown[] = ask.options.map((option, index) => ({
     type: 2,
     style: 2,
@@ -47,7 +64,7 @@ export function askMessage(ask: Ask): MessagePayload {
   }
 
   return {
-    content: ask.question.slice(0, MAX_CONTENT),
+    content: withContext(ask.question, contextLine),
     components: buttonRows(buttons),
     allowed_mentions: { parse: [] },
   };
@@ -116,7 +133,11 @@ export function startedMessage(input: {
  * Claude からの報告。progress は **地の文**で出す (これも本人の発言なので枠を付けない)。
  * done と blocked だけは «状態が変わった» ことを示すので印を残す。
  */
-export function reportMessage(kind: string, text: string): MessagePayload {
+export function reportMessage(
+  kind: string,
+  text: string,
+  contextLine: string | null = null,
+): MessagePayload {
   if (kind === "blocked") {
     return {
       embeds: [{ color: COLOR_ALERT, title: "⛔ 進めません", description: text.slice(0, 4000) }],
@@ -125,7 +146,7 @@ export function reportMessage(kind: string, text: string): MessagePayload {
   }
   const suffix = kind === "done" ? "\n-# ✅ この会話はここで終わりました" : "";
   return {
-    content: (text.slice(0, 1900) + suffix).slice(0, MAX_CONTENT),
+    content: withContext(text.slice(0, 1900) + suffix, contextLine),
     allowed_mentions: { parse: [] },
   };
 }

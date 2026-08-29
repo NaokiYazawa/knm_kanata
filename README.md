@@ -138,8 +138,8 @@ routine の編集画面 → 環境の設定で:
 | ファイル | 役目 |
 | --- | --- |
 | `.mcp.json` | Worker を MCP サーバーとして繋ぐ。cloud session は **project スコープの `.mcp.json` を確認プロンプト無しで読み込む** |
-| `.claude/settings.json` | Stop hook の登録 |
-| `.claude/hooks/kanata-stop.sh` | 完了通知の**保険**。Claude が `report(done)` を忘れても終了だけは届く |
+| `.claude/settings.json` | hook の登録（`PreToolUse` / `Stop` / `SessionEnd`） |
+| `.claude/hooks/kanata-hook.sh` | コンテキスト残量の通報と、完了通知の**保険** |
 
 ```bash
 cp -r /path/to/knm_kanata/repo-template/. /path/to/myapp/
@@ -199,6 +199,51 @@ curl -X POST -H "Authorization: Bearer $KANATA_TOKEN" https://<worker>/gateway/r
 **16.6 分の待ちで turn は 2 回だけ。** 45 秒周期のポーリングなら 22 turn だったので 11 分の 1。
 502 もバックグラウンド化も起きず、progress 通知も 37 回流れた。turn が増えるのは «握りの上限
 (`ASK_HOLD_MS`、既定 15 分) に達したとき» だけなので、伸ばせばさらに減る。
+
+## コンテキストの残量
+
+Claude の発言の末尾に、そのときの使用量が小さく付きます。
+
+```
+kanata
+実装が終わりました。次は？
+▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░ 62% ・124k/200k
+  [ おわり ]  [ ✍️ 書く ]
+```
+
+**次に何を言うか決めるまさにその場**にあるので、見に行く必要がありません。過去のメッセージは
+当時の値のまま残るので、伸び方もそのまま履歴として読めます。
+
+### どこから取っているか
+
+**Claude Code はコンテキスト量を外へ出しません。** どの hook の入力にもトークン数は入って
+おらず、ステータスラインは対話 UI 専用でクラウドセッションでは動きません。唯一の出口が
+**転写ログ (`transcript_path`) の `message.usage`** なので、hook がそれを読んで Worker へ
+送っています（`PreToolUse` = 出す直前 / `Stop` = ターンの終わり）。
+
+分子は[公式のステータスライン](https://code.claude.com/docs/en/statusline)と同じ式です:
+`input_tokens + cache_creation_input_tokens + cache_read_input_tokens`（**output は含めない**）。
+
+分母は転写ログから読めないので設定で持ちます。既定は 200,000 で、拡張コンテキストのモデルなら:
+
+```bash
+wrangler secret put CONTEXT_WINDOW_TOKENS   # 1000000
+```
+
+ズレても**生のトークン数を併記する**ので真値は見失いません（分母を超えたらバーは 100% で
+止まり、% は 203% のように出ます）。
+
+**1 つ古いことがあります。** 転写ログは非同期に書かれるので、hook が走った時点で最新の
+メッセージがまだ載っていないことがある、と公式ドキュメントに明記されています。桁を見るには
+十分、という前提で読んでください。
+
+### 出す場所を «発言の末尾» にした理由
+
+| 候補 | なぜ使わないか |
+|---|---|
+| スレッド名 | Discord の**チャンネル名変更は 2 回 / 10 分**で、毎ターン更新できない |
+| スレッド先頭の起動メッセージ | 更新はできるが、**見るのに上までスクロールが要る** |
+| 別メッセージで通知 | 会話が bot の相槌で埋まる |
 
 ## 握りは落ちる (落ちても失わない)
 

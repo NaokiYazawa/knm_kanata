@@ -43,7 +43,9 @@ cloud session は **サブスク席の枠のまま** なので、こちらを使
 
 | | 相手 |
 | --- | --- |
-| `domain/ids.ts` の `KANATA-<16hex>` | `repo-template/.claude/hooks/kanata-stop.sh` の grep |
+| `domain/ids.ts` の `KANATA-<16hex>` | `repo-template/.claude/hooks/kanata-hook.sh` の grep |
+| `index.ts` の `/hooks/*` のパス | 同じ hook スクリプトが叩く URL |
+| `repo-template/.claude/settings.json` の hook 名 | スクリプト内の `hook_event_name` の分岐 |
 | `domain/prompt.ts` の `ROUTINE_PROMPT` | claude.ai の routine に貼ってある本文 |
 | `mcp/server.ts` の «落ちたら呼び直す» 契約 | `ROUTINE_PROMPT` とツール説明が言う復帰手順 |
 | `domain/prompt.ts` の `buildFireText` | 同上 (payload の 1 行目を session_key として読む前提) |
@@ -157,6 +159,35 @@ Social SDK 由来の一部イベントだけで、チャンネルの発言は今
 
 同じ理由で **同じ内容を `report` と `ask_human` の 2 回に分けさせない**。routine のプロンプトが
 «やったこと» と «次は？» を 1 回の `ask_human` にまとめるよう指示している。
+
+## 5.7 コンテキストの残量を見せる
+
+**Claude Code は «いまどれだけコンテキストを使ったか» を外へ出さない。** どの hook の入力にも
+トークン数は入っておらず、ステータスラインは対話 UI 専用でクラウドセッションでは動かない。
+唯一の出口が **転写ログ (`transcript_path`) の `message.usage`** なので、hook が読んで
+`/hooks/context` へ送る。
+
+- 分子は公式のステータスラインと同じ式にそろえる:
+  `input_tokens + cache_creation_input_tokens + cache_read_input_tokens` (**output は含めない**)。
+  ここを外すと、キャッシュを多用したセッションで «まだ 5% しか使っていない» ように見える
+- **分母は転写ログから読めない**ので設定で持つ (`CONTEXT_WINDOW_TOKENS`、既定 200,000)。
+  ズレても **生のトークン数を併記する**ので、読み手が真値を見失うことはない
+- 出す場所は **Claude の発言の末尾**だけ (`-#` の subtext)。次に何を言うか決めるまさにその場に
+  あるので、見に行く必要がない。スレッド名は Discord の «2 回 / 10 分» の制限で使えない
+- 転写ログは非同期に書かれるので **1 つ古いことがある** (公式ドキュメントに明記)。
+  桁を見るには十分、という前提で読む
+
+### 5.7.1 `Stop` は «終了» ではない
+
+`Stop` は「Claude が応答を終えたとき」= **1 ターンごと**に鳴る。セッションの終了は `SessionEnd`。
+
+ここを間違えて `Stop` で `status = "done"` を立てていたため、会話の途中で «🏁 セッションが
+終了しました» が出ていた (同じセッションが 8 回鳴らした記録がある)。**`§5.5` の判定と噛み合うと
+もっと悪い** — `done` が立ったスレッドへ次に書くと «起こし直し» になり、生きているセッションの
+隣に 2 本目が立つ。
+
+コンテキスト量の通報 (`Stop` / `PreToolUse`) は **`updated_at` を触らない**。あれは «握りが
+生きている» の印で、Stop が鳴いた時点でもう握っていない。混ぜると死んだ質問へ回答を書き込む。
 
 ## 6. routine 側の設定は «コードの外にある前提»
 

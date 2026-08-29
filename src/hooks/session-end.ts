@@ -13,12 +13,12 @@ import type { Env } from "../env";
  * hook から必ず届くようにする。`report` が先に来ていたら二重に出さない。
  */
 
-type StopBody = { session_key?: unknown; summary?: unknown };
+type SessionEndBody = { session_key?: unknown; summary?: unknown };
 
-export async function handleStopHook(request: Request, env: Env): Promise<Response> {
-  let body: StopBody;
+export async function handleSessionEndHook(request: Request, env: Env): Promise<Response> {
+  let body: SessionEndBody;
   try {
-    body = (await request.json()) as StopBody;
+    body = (await request.json()) as SessionEndBody;
   } catch {
     return new Response("bad json", { status: 400 });
   }
@@ -26,7 +26,7 @@ export async function handleStopHook(request: Request, env: Env): Promise<Respon
   const sessionKey = typeof body.session_key === "string" ? body.session_key.trim() : "";
   if (!isSessionKey(sessionKey)) {
     // 印が拾えなかった実行。記録だけ残して 200 を返す (hook を落とすと Claude 側に赤が出る)。
-    console.warn("[stop-hook] session_key が読めませんでした");
+    console.warn("[session-end-hook] session_key が読めませんでした");
     return Response.json({ ok: false, reason: "session_key が読めません" });
   }
 
@@ -35,7 +35,7 @@ export async function handleStopHook(request: Request, env: Env): Promise<Respon
   if (!session) return Response.json({ ok: false, reason: "unknown session" });
 
   const summary = typeof body.summary === "string" ? body.summary.trim() : "";
-  await repo.addEvent(sessionKey, "stop_hook", summary || "(要約なし)");
+  await repo.addEvent(sessionKey, "session_end", summary || "(要約なし)");
 
   // report(done) が来ていれば、完了は既に出ている。同じことを 2 回出さない。
   if (session.status === "done") return Response.json({ ok: true, duplicated: true });

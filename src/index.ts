@@ -3,7 +3,8 @@ import { handleInteraction } from "./discord/interactions";
 import { timingSafeEqual, verifyDiscordSignature } from "./discord/verify";
 import type { Env } from "./env";
 import { gatewayStub } from "./gateway/gateway.do";
-import { handleStopHook } from "./hooks/stop";
+import { handleContextHook } from "./hooks/context";
+import { handleSessionEndHook } from "./hooks/session-end";
 import { handleMcp } from "./mcp/server";
 
 /**
@@ -57,9 +58,15 @@ app.post("/mcp", async (c) => {
 // 待ちの SSE は POST の応答として返すので、こちらは使わない。
 app.get("/mcp", (c) => c.text("method not allowed", 405));
 
-app.post("/hooks/stop", async (c) => {
+// hook は 2 つとも «保険» で、落ちても本題は進む (hook 側は必ず exit 0 する)。
+app.post("/hooks/session-end", async (c) => {
   if (!bearerOk(c)) return c.text("unauthorized", 401);
-  return handleStopHook(c.req.raw, c.env);
+  return handleSessionEndHook(c.req.raw, c.env);
+});
+
+app.post("/hooks/context", async (c) => {
+  if (!bearerOk(c)) return c.text("unauthorized", 401);
+  return handleContextHook(c.req.raw, c.env);
 });
 
 /**

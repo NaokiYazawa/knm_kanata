@@ -18,6 +18,12 @@ export type Env = {
   /** secret。cloud session 側 (MCP / hook) から叩くときの Bearer。 */
   KANATA_TOKEN: string;
 
+  /**
+   * 任意。コンテキストの分母 (トークン)。既定 200,000、拡張コンテキストのモデルなら 1,000,000。
+   * **転写ログからは分母が読めない**ので設定で持つ (生のトークン数も併記するのでズレても気付ける)。
+   */
+  CONTEXT_WINDOW_TOKENS?: string;
+
   /** 任意。1 回のツール呼び出しを握り続ける上限 (ms)。既定 15 分。テスト用に短くする。 */
   ASK_HOLD_MS?: string;
   /** 任意。回答を見に行く間隔 (ms)。既定 3000。 */

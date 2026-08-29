@@ -77,6 +77,13 @@ async function seedSession(sessionKey: string, threadId: string): Promise<Repo> 
   return repo;
 }
 
+/** そのチャンネルへ実際に投げた本文。投げていなければ落ちる (取り違えを黙って通さない)。 */
+function postedContent(channelId: string): string {
+  const posted = calls.find((c) => c.url.endsWith(`/channels/${channelId}/messages`));
+  if (!posted) throw new Error(`${channelId} へ投稿していません`);
+  return (posted.body as { content?: string }).content ?? "";
+}
+
 function expectDiscordPost(channelId: string, messageId: string, status = 200): void {
   replies.set(`https://discord.com/api/v10/channels/${channelId}/messages`, {
     status,
@@ -344,6 +351,65 @@ describe("ask_human の握り", () => {
       await handleMcp(askCall(sessionKey, { options: [], allow_free_text: false }), env)
     ).json();
     expect(isToolError(body)).toBe(true);
+  });
+});
+
+describe("コンテキストの残量", () => {
+  it("hook から届いた値を Claude の発言の末尾に添える", async () => {
+    const sessionKey = "KANATA-c0c0c0c0c0c0c0c0";
+    const repo = await seedSession(sessionKey, "th-ctx");
+    // PreToolUse hook が転写ログから拾って送ってくる形。
+    expect(
+      await repo.saveContextUsage(sessionKey, { usedTokens: 124_000, outputTokens: 476 }),
+    ).toBe(true);
+    expectDiscordPost("th-ctx", "msg-ctx");
+
+    const response = await handleMcp(askCall(sessionKey), env);
+    void response.body?.cancel();
+
+    // 質問の下に、subtext で小さく。
+    const content = postedContent("th-ctx");
+    expect(content).toContain("A か B か");
+    expect(content).toContain("-# ▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░ 62% ・124k/200k");
+  });
+
+  it("値が 1 度も来ていなければ何も添えない", async () => {
+    const sessionKey = "KANATA-c1c1c1c1c1c1c1c1";
+    await seedSession(sessionKey, "th-noctx");
+    expectDiscordPost("th-noctx", "msg-noctx");
+
+    const response = await handleMcp(askCall(sessionKey), env);
+    void response.body?.cancel();
+
+    expect(postedContent("th-noctx")).toBe("A か B か");
+  });
+
+  it("report の発言にも添える (progress も Claude 本人の発言なので)", async () => {
+    const sessionKey = "KANATA-c2c2c2c2c2c2c2c2";
+    const repo = await seedSession(sessionKey, "th-rep");
+    await repo.saveContextUsage(sessionKey, { usedTokens: 180_000, outputTokens: 100 });
+    expectDiscordPost("th-rep", "msg-rep");
+
+    await handleMcp(
+      rpc("tools/call", {
+        name: "report",
+        arguments: { session_key: sessionKey, kind: "progress", text: "実装中です" },
+      }),
+      env,
+    );
+    expect(postedContent("th-rep")).toContain("90% ・180k/200k");
+  });
+
+  it("生存の印 (updated_at) は動かさない", async () => {
+    // ここを動かすと、ターンが終わった (= もう握っていない) セッションを «まだ待っている» と
+    // 誤判定して、死んだ質問へ回答を書き込むことになる。
+    const sessionKey = "KANATA-c3c3c3c3c3c3c3c3";
+    const repo = await seedSession(sessionKey, "th-touch");
+    const before = (await repo.getSession(sessionKey))?.updatedAt;
+    await repo.saveContextUsage(sessionKey, { usedTokens: 1_000, outputTokens: 10 });
+    const after = await repo.getSession(sessionKey);
+    expect(after?.updatedAt).toBe(before);
+    expect(after?.contextUsedTokens).toBe(1_000);
   });
 });
 
