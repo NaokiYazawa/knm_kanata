@@ -9,6 +9,21 @@
 export type Project = Readonly<{
   /** Discord のコマンド選択肢に出る名前。 */
   name: string;
+  /**
+   * このプロジェクトの Discord チャンネル。**ここで叩いた `/claude` は自動でこの
+   * プロジェクトになる** (スレッドの中で叩かれたら親チャンネルで照合する)。
+   *
+   * 1 チャンネルに 2 つのプロジェクトを結び付けない (どちらか決められない)。
+   */
+  channelId: string | null;
+  /**
+   * このプロジェクトが触れるリポジトリ。**表示用**で、正本は routine の `sources`。
+   *
+   * セッションが触れる範囲は `sources` が厳密な境界になっている (実測: 非公開リポジトリは
+   * clone できず、`mcp__github__*` も sources にスコープされる)。ここに書いてあっても
+   * routine に入っていなければ触れないので、**ここを増やしただけで増えたと思わない**。
+   */
+  repos: readonly string[];
   /** 表示用。Claude には routine 側の設定で渡るので、ここは案内に使うだけ。 */
   repoUrl: string;
   /** https://api.anthropic.com/v1/claude_code/routines/trig_…/fire */
@@ -60,7 +75,21 @@ export function parseProjects(raw: string | undefined): Project[] | ProjectsProb
     if (projects.some((p) => p.name === name)) {
       return { message: `PROJECTS_JSON に同じ name (${name}) が 2 つあります` };
     }
-    projects.push({ name, repoUrl, fireUrl, fireToken });
+
+    const channelId = str(entry, "channelId");
+    // 同じチャンネルに 2 つ結び付けると «そこで叩いた /claude» の行き先が決まらない。
+    // 静かに片方を選ぶより、設定を読めないと言って止める方がよい。
+    if (channelId && projects.some((p) => p.channelId === channelId)) {
+      return { message: `PROJECTS_JSON に同じ channelId (${channelId}) が 2 つあります` };
+    }
+
+    const rawRepos = entry.repos;
+    if (rawRepos !== undefined && !Array.isArray(rawRepos)) {
+      return { message: `PROJECTS_JSON[${index}] の repos は配列である必要があります` };
+    }
+    const repos = (rawRepos ?? []).filter((v): v is string => typeof v === "string" && v !== "");
+
+    projects.push({ name, channelId, repos, repoUrl, fireUrl, fireToken });
   }
   return projects;
 }
@@ -71,4 +100,22 @@ export function isProjectsProblem(value: Project[] | ProjectsProblem): value is 
 
 export function findProject(projects: readonly Project[], name: string): Project | null {
   return projects.find((p) => p.name === name) ?? null;
+}
+
+/**
+ * そのチャンネルに結び付いたプロジェクト。**`/claude` にプロジェクト名を書かせないための口**。
+ *
+ * スレッドの中で叩かれたら `channelId` はスレッドの id になるので、呼ぶ側が親チャンネルの
+ * id を渡す (`channel.parent_id`)。ここは «どれか 1 つ» を返すだけで、親子の解決はしない。
+ */
+export function findProjectByChannel(
+  projects: readonly Project[],
+  channelIds: readonly (string | null | undefined)[],
+): Project | null {
+  for (const channelId of channelIds) {
+    if (!channelId) continue;
+    const hit = projects.find((p) => p.channelId === channelId);
+    if (hit) return hit;
+  }
+  return null;
 }

@@ -206,6 +206,25 @@ Social SDK 由来の一部イベントだけで、チャンネルの発言は今
 `~/.claude/skills/` はローカルでは project より強いのにクラウドでは読まれないので、
 **手元では動くのにクラウドで «スキルが無い» と言われる**組み合わせが作れてしまう。
 
+## 5.9 プロジェクトとチャンネルとリポジトリ
+
+- **`/claude` の行き先は 3 段で決める**: `project` の明示 → **チャンネルとの結び付け** →
+  プロジェクトが 1 つだけならそれ。**«唯一だから» で勝手に選ばない場所を残す** —
+  雑談チャンネルの `/claude` が本番リポジトリに飛ぶ事故を作らない。スレッドで叩かれたら
+  `channel.id` はスレッドなので `parent_id` でも照合する
+- **`PROJECTS_JSON` の `repos` は表示用**。正本は routine の `sources`。
+  **セッションが触れる範囲は `sources` が厳密な境界**で、実測で確かめてある:
+  非公開リポジトリは `git` で clone できず (credential helper が無い)、`mcp__github__*` も
+  sources にスコープされて拒否される。**ここに書き足しても触れるようにはならない**
+- **リポジトリを 2 本以上入れると作業ディレクトリが `/home/user` へ上がる**。
+  プロジェクトスコープの `.mcp.json` と `.claude/settings.json` は作業ディレクトリから
+  読まれるので、commit してあっても届かず **ask_human も report も消える** (実測)。
+  塞ぐのは `cloud-setup.sh` を cloud environment の Setup script に貼ること (`§6` の表)。
+  スキルは無事なので、壊れるのは «プロジェクトルートから読む設定» だけ
+
+**テストのプロジェクトは 2 つ以上にしておく。** 1 つだと «唯一だから選ばれた» に守られて、
+チャンネルとの結び付けが壊れていても気付けない (`vitest.config.ts` に理由を書いてある)。
+
 ## 6. routine 側の設定は «コードの外にある前提»
 
 Worker のコードだけ正しくても動かない。routine と cloud environment に次が要る:
@@ -216,6 +235,7 @@ Worker のコードだけ正しくても動かない。routine と cloud environ
 | cloud environment の環境変数 | `KANATA_URL` / `KANATA_TOKEN` |
 | routine の `allowed_tools` | `mcp__kanata` と 3 つのツール名 (無いと承認待ちで固まる) |
 | Discord Developer Portal | **MESSAGE CONTENT INTENT** (無いと Gateway が close 4014 で切られる) |
+| cloud environment の Setup script | `cloud-setup.sh` (**リポジトリが 2 本以上の routine で要る**) |
 
 どれが欠けても症状は «ask_human が呼ばれない» で同じに見える。切り分けは
 **存在しない `session_key` で `ask_human` を 1 回だけ呼ばせる** のが速い

@@ -2,7 +2,12 @@ import { Repo } from "../db/repo";
 import { MODAL_ANSWER_FIELD, parseAskAction } from "../domain/ask";
 import { newSessionKey } from "../domain/ids";
 import { isOwner } from "../domain/owner";
-import { findProject, isProjectsProblem, parseProjects } from "../domain/projects";
+import {
+  findProject,
+  findProjectByChannel,
+  isProjectsProblem,
+  parseProjects,
+} from "../domain/projects";
 import type { Env } from "../env";
 import { fireAndAnnounce } from "../session/launch";
 import { answerModal, askAnsweredMessage, noticeMessage, startedMessage } from "./components";
@@ -38,7 +43,8 @@ type Interaction = {
   type: number;
   token: string;
   channel_id?: string;
-  channel?: { id?: string; type?: number };
+  /** スレッドで叩かれたとき `id` はスレッド、`parent_id` が元のチャンネル。 */
+  channel?: { id?: string; type?: number; parent_id?: string };
   member?: { user?: { id?: string } };
   user?: { id?: string };
   message?: { id?: string; channel_id?: string };
@@ -127,18 +133,22 @@ async function handleCommand(
   const projects = parseProjects(env.PROJECTS_JSON);
   if (isProjectsProblem(projects)) return ephemeral(`設定を読めません: ${projects.message}`);
 
+  // どのプロジェクトかは 3 段で決める。**チャンネルが 2 番目**なのが肝で、
+  // «そのチャンネルはそのプロジェクト» と決めておけば毎回名前を書かなくてよくなる。
+  // スレッドの中で叩かれたら `channel.id` はスレッドなので、親チャンネルでも照合する。
   const requested = optionString(interaction, "project");
   const project = requested
     ? findProject(projects, requested)
-    : projects.length === 1
-      ? projects[0]
-      : null;
+    : (findProjectByChannel(projects, [
+        interaction.channel?.parent_id,
+        interaction.channel?.id ?? interaction.channel_id,
+      ]) ?? (projects.length === 1 ? projects[0] : null));
   if (!project) {
     const names = projects.map((p) => p.name).join(" / ");
     return ephemeral(
       requested
         ? `プロジェクト «${requested}» は登録されていません。使えるのは: ${names}`
-        : `プロジェクトを選んでください: ${names}`,
+        : `このチャンネルに結び付いたプロジェクトがありません。project を指定してください: ${names}`,
     );
   }
 

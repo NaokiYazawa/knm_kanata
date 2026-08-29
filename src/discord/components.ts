@@ -111,18 +111,28 @@ export function answerModal(ask: Ask): unknown {
   };
 }
 
+/**
+ * 起動の知らせ。**触れるリポジトリを添える**のは、それがこのセッションの «できることの境界»
+ * だから (実測: routine の sources に無いリポジトリは clone も push もできない)。
+ * 設定に書いていなければ黙って省く。
+ */
 export function startedMessage(input: {
   project: string;
+  repos?: readonly string[];
   prompt: string;
   sessionKey: string;
 }): MessagePayload {
+  const fields: unknown[] = [{ name: "プロジェクト", value: input.project, inline: true }];
+  if (input.repos && input.repos.length > 0) {
+    fields.push({ name: "リポジトリ", value: input.repos.join("\n").slice(0, 1024) });
+  }
   return {
     embeds: [
       {
         color: COLOR_START,
         title: "🚀 クラウドセッションを起動しました",
         description: input.prompt.slice(0, 2000),
-        fields: [{ name: "プロジェクト", value: input.project, inline: true }],
+        fields,
         footer: { text: input.sessionKey },
       },
     ],

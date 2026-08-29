@@ -40,11 +40,17 @@ beforeEach(() => {
 
 afterEach(() => vi.unstubAllGlobals());
 
-function command(task: string, channelId: string, userId = "owner-1"): never {
+/** 既定では demo に結び付いたチャンネル配下。`parentId: null` で «どこにも結び付いていない»。 */
+function command(
+  task: string,
+  channelId: string,
+  userId = "owner-1",
+  parentId: string | null = "ch-demo",
+): never {
   return {
     type: 2,
     token: "itok",
-    channel: { id: channelId, type: 11 },
+    channel: { id: channelId, type: 11, ...(parentId ? { parent_id: parentId } : {}) },
     member: { user: { id: userId } },
     data: { name: "claude", options: [{ name: "task", value: task }] },
   } as never;
@@ -189,6 +195,71 @@ describe("/claude", () => {
       text: "この後 README も",
       authorId: "owner-1",
     });
+  });
+
+  it("チャンネルごとに違うプロジェクトへ割り当てる", async () => {
+    // 設定は demo=ch-demo / other=ch-other (vitest.config.ts)。
+    // プロジェクト名を書かなくても、叩いたチャンネルで行き先が決まる。
+    replies.set(ORIGINAL, { status: 200, body: { id: "m", channel_id: "ch-other" } });
+    replies.set("https://api.anthropic.com/v1/claude_code/routines/trig_other/fire", {
+      status: 200,
+      body: {
+        claude_code_session_id: "session_o",
+        claude_code_session_url: "https://claude.ai/code/session_o",
+      },
+    });
+    replies.set("https://discord.com/api/v10/channels/ch-other/messages", {
+      status: 200,
+      body: { id: "n" },
+    });
+
+    await handleInteraction(command("別チャンネルから", "ch-other", "owner-1", null), env, ctx);
+    await settle();
+
+    const created = (await new Repo(env.DB).listRecentSessions(30)).find(
+      (s) => s.prompt === "別チャンネルから",
+    );
+    expect(created?.project).toBe("other");
+    // demo の routine は叩いていない。
+    expect(seen).not.toContain(FIRE);
+  });
+
+  it("スレッドの中で叩かれたら親チャンネルで結び付けを引く", async () => {
+    // スレッドでは channel.id はスレッドの id になるので、parent_id を見ないと当たらない。
+    replies.set(ORIGINAL, { status: 200, body: { id: "m2", channel_id: "th-unknown" } });
+    replies.set("https://api.anthropic.com/v1/claude_code/routines/trig_other/fire", {
+      status: 200,
+      body: {
+        claude_code_session_id: "session_o2",
+        claude_code_session_url: "https://claude.ai/code/session_o2",
+      },
+    });
+    replies.set("https://discord.com/api/v10/channels/th-unknown/messages", {
+      status: 200,
+      body: { id: "n2" },
+    });
+
+    await handleInteraction(command("スレッドから", "th-unknown", "owner-1", "ch-other"), env, ctx);
+    await settle();
+
+    const created = (await new Repo(env.DB).listRecentSessions(30)).find(
+      (s) => s.prompt === "スレッドから",
+    );
+    expect(created?.project).toBe("other");
+  });
+
+  it("どこにも結び付いていない場所では、黙って選ばず名前を聞く", async () => {
+    // «唯一だから» で勝手に選ぶと、雑談チャンネルの /claude が本番リポジトリに飛ぶ。
+    const response = await handleInteraction(
+      command("どこ？", "ch-nowhere", "owner-1", null),
+      env,
+      ctx,
+    );
+    const body = (await response.json()) as { data: { content: string; flags: number } };
+    expect(body.data.flags).toBe(64);
+    expect(body.data.content).toContain("demo");
+    expect(body.data.content).toContain("other");
+    expect(seen).toEqual([]);
   });
 
   it("持ち主以外は何もできず、自分の ID を返してもらえる", async () => {

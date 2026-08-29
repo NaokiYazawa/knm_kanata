@@ -200,6 +200,85 @@ curl -X POST -H "Authorization: Bearer $KANATA_TOKEN" https://<worker>/gateway/r
 502 もバックグラウンド化も起きず、progress 通知も 37 回流れた。turn が増えるのは «握りの上限
 (`ASK_HOLD_MS`、既定 15 分) に達したとき» だけなので、伸ばせばさらに減る。
 
+## 1 チャンネル = 1 プロジェクト
+
+プロジェクトの紐付けはこう置きます。**管理画面は要りません。**
+
+```
+プロジェクト ──┬── GitHub リポジトリ × N   →  routine の sources   (正本)
+               ├── routine × 1             →  fireUrl / fireToken
+               └── Discord チャンネル × 1  →  PROJECTS_JSON の channelId
+```
+
+```json
+[
+  {
+    "name": "alpha",
+    "channelId": "1543…",
+    "repos": ["NaokiYazawa/api", "NaokiYazawa/web"],
+    "repoUrl": "https://github.com/NaokiYazawa/api",
+    "fireUrl": "https://api.anthropic.com/v1/claude_code/routines/trig_…/fire",
+    "fireToken": "sk-ant-oat01-…"
+  }
+]
+```
+
+`#alpha` で `/claude` を叩けば、プロジェクト名を書かなくても alpha に飛びます。スレッドの中で
+叩いても親チャンネルで照合します。**どこにも結び付いていない場所では黙って選ばず**、使える
+名前を返します（雑談チャンネルの `/claude` が本番リポジトリに飛ぶ事故を作らないため）。
+
+`repos` は**表示用**です。起動メッセージに「このセッションが触れる範囲」として出しますが、
+**正本は routine の `sources`** で、ここに書き足しても触れるようにはなりません。
+
+### セッションが触れる範囲は `sources` が境界（実測）
+
+| 試したこと | 結果 |
+|---|---|
+| `credential.helper` | **未設定** |
+| 公開リポジトリを `git clone` | OK |
+| **非公開リポジトリを `git ls-remote`** | **NG** |
+| clone 済みリポジトリへ `git push --dry-run` | OK |
+| `mcp__github__*` | 見えるが **sources にスコープされ、他リポジトリは拒否**される |
+
+つまり「主リポジトリ 1 本だけ source に入れて、他は会話の中で clone する」は**成立しません**。
+**そのプロジェクトのリポジトリは全部 `sources` に入れてください。**
+
+### 複数リポジトリのときは setup script が要る
+
+リポジトリを 2 本以上入れると **作業ディレクトリがリポジトリの外へ上がります**（実測）。
+
+```
+1 本 … cwd = /home/user/knm_kanata   → リポジトリの .mcp.json が読まれる
+2 本 … cwd = /home/user              → 読まれない（mcp__kanata__* が消える）
+```
+
+プロジェクトスコープの `.mcp.json` と `.claude/settings.json` は**作業ディレクトリ**から読まれる
+ので、commit してあっても届きません。**ask_human も report も使えなくなります。**
+（スキルは無事でした。壊れるのは「プロジェクトルートから読む設定」だけです。）
+
+塞ぐには [`cloud-setup.sh`](./cloud-setup.sh) を cloud environment の **Setup script** に貼ります。
+**中身はどのプロジェクトでも同じ**なので、環境に 1 回貼れば以後は routine にリポジトリを
+並べるだけです。貼った後の実測:
+
+```
+Running setup script → Setup script completed
+/home/user/.mcp.json                     あり
+/home/user/.claude/settings.json         あり  hooks: PreToolUse / Stop / SessionEnd
+mcp__kanata__ask_human / ask_wait / report   見えている   ← 復活
+コンテキスト残量が D1 に届いた              61,506 トークン
+```
+
+### routine の上限
+
+| | |
+|---|---|
+| routine の**数** | 文書化された上限なし |
+| 1 日に**走らせられる回数** | アカウント単位の日次キャップ（正本は [claude.ai/code/routines](https://claude.ai/code/routines)） |
+| API トークン | **routine ごとに web UI で手で発行**（*"There is no public API for token management."*） |
+
+日次キャップは「routine の数」ではなく「起動した回数」に効きます。kanata はスレッドを 1 本の
+セッションで回し続けるので、**1 日ぶんの会話が 1 回**にしかなりません。
+
 ## スキル (Agent Skills)
 
 **リポジトリに commit したスキルは、クラウドセッションでそのまま使えます。**

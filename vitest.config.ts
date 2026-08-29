@@ -21,12 +21,23 @@ export default defineWorkersConfig({
             DISCORD_BOT_TOKEN: "bot-token",
             OWNER_DISCORD_USER_ID: "owner-1",
             KANATA_TOKEN: "test-token",
+            // **2 つ以上にしておく。** 1 つだと «唯一だから選ばれた» に守られて、
+            // チャンネルとの結び付けが壊れていても気付けない。
             PROJECTS_JSON: JSON.stringify([
               {
                 name: "demo",
+                channelId: "ch-demo",
+                repos: ["example/api", "example/web"],
                 repoUrl: "https://github.com/example/demo",
                 fireUrl: "https://api.anthropic.com/v1/claude_code/routines/trig_test/fire",
                 fireToken: "sk-ant-oat01-test",
+              },
+              {
+                name: "other",
+                channelId: "ch-other",
+                repoUrl: "https://github.com/example/other",
+                fireUrl: "https://api.anthropic.com/v1/claude_code/routines/trig_other/fire",
+                fireToken: "sk-ant-oat01-other",
               },
             ]),
             // 握りの上限。1.5 秒あれば «回答が入る» 側は即座に、«握り切れた» 側も現実的な時間で終わる。
