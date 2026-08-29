@@ -1,0 +1,28 @@
+{
+  "name": "knm_kanata",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "check-types": "tsc --noEmit",
+    "check": "biome check --write .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:migrate:local": "wrangler d1 migrations apply kanata --local",
+    "db:migrate": "wrangler d1 migrations apply kanata --remote",
+    "commands:register": "node --env-file-if-exists=.env.local scripts/register-commands.ts"
+  },
+  "dependencies": {
+    "hono": "^4.10.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.2.0",
+    "@cloudflare/vitest-pool-workers": "0.9.14",
+    "@cloudflare/workers-types": "^5.20260829.1",
+    "typescript": "^5.9.2",
+    "vitest": "~3.2.0",
+    "wrangler": "^4.107.0"
+  }
+}
